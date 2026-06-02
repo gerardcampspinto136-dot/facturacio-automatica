@@ -1,0 +1,35 @@
+# ============================================================
+#  CONFIGURACIÓN DE EMPRESA
+#  Edita este archivo con los datos de tu empresa.
+#  Coloca el logo en config/logo.png
+# ============================================================
+
+company:
+  name: "Nombre de tu Empresa"
+  cif: "B12345678"
+  address: "Calle Ejemplo 123, 08001 Barcelona, España"
+  phone: "+34 600 000 000"
+  email: "empresa@ejemplo.com"
+  logo_path: "config/logo.png"   # Ruta al logo (PNG/JPG, 300x150 px recomendado)
+
+invoice:
+  tax_rate: 21            # Porcentaje de IVA
+  currency: "EUR"
+  currency_symbol: "€"
+  payment_terms: "30 días"
+  bank_account: "ES00 0000 0000 00 0000000000"   # Dejar vacío si no se quiere mostrar
+
+email:
+  subject_template: "Factura {invoice_number} - {company_name}"
+  body_template: |
+    Estimado/a {client_name},
+
+    Adjunto encontrará la factura {invoice_number} correspondiente a nuestros servicios,
+    por un importe total de {total}.
+
+    Quedo a su disposición para cualquier consulta.
+
+    Un cordial saludo,
+    {company_name}
+    {company_phone}
+    {company_email}
