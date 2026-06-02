@@ -5,11 +5,11 @@
 # ============================================================
 
 company:
-  name: "Nombre de tu Empresa"
-  cif: "B12345678"
-  address: "Calle Ejemplo 123, 08001 Barcelona, España"
-  phone: "+34 600 000 000"
-  email: "empresa@ejemplo.com"
+  name: "TechSolucions Test S.L."
+  cif: "B87654321"
+  address: "Carrer de Provença 42, 08029 Barcelona, España"
+  phone: "+34 932 000 001"
+  email: "facturacio@techsolucions-test.com"
   logo_path: "config/logo.png"   # Ruta al logo (PNG/JPG, 300x150 px recomendado)
 
 invoice:
@@ -17,7 +17,7 @@ invoice:
   currency: "EUR"
   currency_symbol: "€"
   payment_terms: "30 días"
-  bank_account: "ES00 0000 0000 00 0000000000"   # Dejar vacío si no se quiere mostrar
+  bank_account: "ES91 2100 0418 4502 0005 1332"
 
 email:
   subject_template: "Factura {invoice_number} - {company_name}"
