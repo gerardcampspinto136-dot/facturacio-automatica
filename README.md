@@ -3,11 +3,13 @@
 A Telegram bot that turns a voice message into a complete invoice:
 
 1. Receives a voice message describing the invoice (client, services, hours, materials…)
-2. Transcribes the audio with **OpenAI Whisper**
+2. Transcribes the audio with **Groq Whisper** (free) or **OpenAI Whisper**
 3. Extracts structured data with **Claude (Anthropic)**
-4. Generates a professional **PDF invoice** with your company branding
-5. Logs the invoice to a **Google Sheets** spreadsheet
-6. Sends the PDF to the client via **Gmail**
+4. Generates a professional **PDF invoice draft** with your company branding
+5. Shows you the draft for review — nothing is sent until you press **✅ Confirmar y enviar**
+6. On confirmation: assigns the invoice number, logs it to **Google Sheets**, and emails the PDF to the client via **Gmail**
+
+> The sequential invoice number is only consumed when you confirm, so cancelled drafts never leave gaps in your numbering.
 
 ---
 
@@ -34,7 +36,8 @@ copy .env.example .env
 | Variable | Where to get it |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) on Telegram |
-| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) |
+| `GROQ_API_KEY` | [console.groq.com](https://console.groq.com/keys) — free, preferred for speech-to-text |
+| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) — optional fallback if no Groq key |
 | `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) |
 | `GOOGLE_CREDENTIALS_PATH` | See step 4 below |
 | `SPREADSHEET_ID` | From the Google Sheets URL |
@@ -97,7 +100,7 @@ The bot understands Spanish, Catalan and English. Example:
 │   ├── models.py             # InvoiceData and InvoiceItem dataclasses
 │   ├── config_loader.py      # Loads company.yaml
 │   ├── invoice_number.py     # Auto-incrementing invoice number
-│   ├── transcription.py      # OpenAI Whisper STT
+│   ├── transcription.py      # Groq / OpenAI Whisper STT
 │   ├── parser.py             # Claude invoice data extractor
 │   ├── invoice_generator.py  # ReportLab PDF builder
 │   ├── google_auth.py        # Shared Google OAuth2 flow
