@@ -5,11 +5,28 @@ A Telegram bot that turns a voice message into a complete invoice:
 1. Receives a voice message describing the invoice (client, services, hours, materials…)
 2. Transcribes the audio with **Groq Whisper** (free) or **OpenAI Whisper**
 3. Extracts structured data with **Claude (Anthropic)**
-4. Generates a professional **PDF invoice draft** with your company branding
-5. Shows you the draft for review — nothing is sent until you press **✅ Confirmar y enviar**
-6. On confirmation: assigns the invoice number, logs it to **Google Sheets**, and emails the PDF to the client via **Gmail**
+4. Generates a professional **PDF invoice** with your company branding
+5. Either sends it immediately or holds it for review (see **Review modes** below)
+6. Logs it to **Google Sheets** and emails the PDF to the client via **Gmail**
 
-> The sequential invoice number is only consumed when you confirm, so cancelled drafts never leave gaps in your numbering.
+## Review modes
+
+Set `review.mode` in `config/company.yaml`:
+
+- **`auto`** — the invoice is generated and **sent to the client immediately**, at your own risk.
+  If something is wrong, cancel it afterwards with a contra invoice (`/anular <número>`).
+- **`manual`** (default) — each invoice is held in a **pending queue** with a draft PDF; the
+  sequential number is **not** consumed yet (so cancelled drafts never leave gaps). On a schedule you
+  choose (`review.notify.schedule`: `1d`, `3d`, `1w`, `2w…`) the reviewer gets a **Telegram and/or
+  email** notification with a link to a **web page** where they sign in with their Google account and
+  **approve, edit, or reject** each invoice. Only on approval is the number assigned, the invoice
+  logged, and the email sent.
+
+### Contra / rectifying invoices (facturas rectificativas)
+
+To cancel an already-sent invoice, send `/anular <número>` in Telegram (or use the **Anular** button
+on the web *Emitidas* page). This issues a rectifying invoice in its own `R-` series with negated
+amounts, logs it, and emails the client.
 
 ---
 
@@ -52,11 +69,34 @@ copy .env.example .env
 6. Save it as `config/credentials/google_credentials.json`
 7. On first run the browser will open for authorisation — follow the prompts
 
-### 5 — Run the bot
+### 5 — (Manual mode only) Set up the web review page
+
+The review page authenticates reviewers with **Google Sign-In**:
+
+1. In [Google Cloud Console](https://console.cloud.google.com/) → **Credentials → Create Credentials
+   → OAuth 2.0 Client ID**, choose **Web application** (this is separate from the Desktop client in
+   step 4).
+2. Under **Authorized redirect URIs** add `{base_url}/auth/callback` (e.g.
+   `http://localhost:8000/auth/callback`).
+3. Put the client id/secret in `.env` as `WEB_OAUTH_CLIENT_ID` / `WEB_OAUTH_CLIENT_SECRET`, and set a
+   long random `SESSION_SECRET`.
+4. List the allowed reviewer emails under `review.reviewers` in `config/company.yaml`.
+
+**Reviewing from your phone:** the local server must be reachable at a public URL. Run a tunnel, e.g.
+`cloudflared tunnel --url http://localhost:8000`, then set `review.web.base_url` (and the OAuth
+redirect URI) to that public URL.
+
+> For quick local testing you can set `WEB_DEV_NO_AUTH=1` in `.env` to skip Google login. **Never use
+> this in production.**
+
+### 6 — Run the bot
 
 ```bash
 py main.py
 ```
+
+In `manual` mode this also starts the web review app (`review.web.host:port`) and the reminder
+scheduler. In `auto` mode only the Telegram bot runs.
 
 ---
 
@@ -105,9 +145,15 @@ The bot understands Spanish, Catalan and English. Example:
 │   ├── invoice_generator.py  # ReportLab PDF builder
 │   ├── google_auth.py        # Shared Google OAuth2 flow
 │   ├── sheets.py             # Google Sheets logger
-│   ├── email_sender.py       # Gmail sender
+│   ├── email_sender.py       # Gmail sender (send_email + send_invoice_email)
+│   ├── store.py              # Pending queue + issued-invoice records (JSON)
+│   ├── finalize.py           # Shared: assign number → PDF → Sheets → email → record
+│   ├── rectify.py            # Contra / rectifying invoices
+│   ├── notify.py             # Reviewer reminders (Telegram/email)
+│   ├── scheduler.py          # Batched pending-invoice reminders
+│   ├── web/app.py            # FastAPI review page (Google login)
 │   └── bot.py                # Telegram bot handlers
-├── main.py                   # Entry point
+├── main.py                   # Entry point (bot + web + scheduler)
 ├── requirements.txt
 └── .env.example
 ```

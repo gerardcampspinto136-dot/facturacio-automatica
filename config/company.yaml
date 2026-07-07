@@ -19,6 +19,24 @@ invoice:
   payment_terms: "30 días"
   bank_account: "ES91 2100 0418 4502 0005 1332"
 
+review:
+  # "auto"   → la factura se envía al cliente inmediatamente (a tu propio riesgo;
+  #            corrige con una factura rectificativa si algo falla).
+  # "manual" → la factura queda pendiente de revisión en la página web antes de enviarse.
+  mode: "manual"
+  # Emails autorizados a iniciar sesión en la página de revisión.
+  reviewers:
+    - "gerardcampspinto136@gmail.com"
+  notify:
+    channels: ["telegram"]     # dónde avisar: "telegram", "email" o ambos
+    schedule: "1d"             # cada cuánto recordar las facturas pendientes: 1d, 3d, 1w, 2w
+    email: ""                  # email que recibe el aviso (si channels incluye "email")
+    telegram_chat_id: 0        # chat de Telegram que recibe el aviso (si incluye "telegram")
+  web:
+    base_url: "http://localhost:8000"   # URL usada en los enlaces (usa la del túnel para el móvil)
+    host: "127.0.0.1"
+    port: 8000
+
 email:
   subject_template: "Factura {invoice_number} - {company_name}"
   body_template: |

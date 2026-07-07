@@ -26,6 +26,8 @@ class InvoiceData:
     invoice_number: Optional[str] = None
     date: date = field(default_factory=date.today)
     notes: Optional[str] = None
+    # When set, this is a rectifying (contra) invoice cancelling the given invoice number.
+    rectifies: Optional[str] = None
 
     @property
     def subtotal(self) -> float:

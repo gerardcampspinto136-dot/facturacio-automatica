@@ -29,6 +29,24 @@ class CompanyConfig:
         )
         self.email_body_template = email_cfg.get("body_template", "")
 
+        # ── Review workflow ──────────────────────────────────────────────────
+        review = data.get("review", {}) or {}
+        # "auto"   → send to the client immediately.
+        # "manual" → queue for review on the web page before sending.
+        self.review_mode = review.get("mode", "manual")
+        self.reviewers = review.get("reviewers", []) or []
+
+        notify = review.get("notify", {}) or {}
+        self.notify_channels = notify.get("channels", ["telegram"]) or []
+        self.notify_schedule = str(notify.get("schedule", "1d"))
+        self.notify_email = notify.get("email", "")
+        self.notify_telegram_chat_id = notify.get("telegram_chat_id", 0)
+
+        web = review.get("web", {}) or {}
+        self.web_base_url = str(web.get("base_url", "http://localhost:8000")).rstrip("/")
+        self.web_host = web.get("host", "127.0.0.1")
+        self.web_port = int(web.get("port", 8000))
+
 
 _config: CompanyConfig | None = None
 

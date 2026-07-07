@@ -136,6 +136,28 @@ def main() -> None:
     if sid:
         ok("Spreadsheet ID saved")
 
+    # ── 5b. Review mode + web review page ─────────────────────────────────────
+    section("STEP 5b — Review mode")
+    print("  auto   → invoices are sent to the client immediately (at your own risk).")
+    print("  manual → invoices wait for approval on a web page before sending.")
+    print()
+    mode = ask("  Which mode? auto / manual", "manual").lower()
+    if mode not in ("auto", "manual"):
+        mode = "manual"
+    info(f"Set 'review.mode: {mode}' in config/company.yaml (edit reviewers/notify there too).")
+
+    if mode == "manual":
+        print()
+        print("  The web review page signs reviewers in with Google.")
+        print("  In Google Cloud Console → Credentials → Create Credentials →")
+        print("  OAuth 2.0 Client ID → **Web application** (separate from the Desktop one).")
+        print("  Add this Authorized redirect URI:  http://localhost:8000/auth/callback")
+        print()
+        env["WEB_OAUTH_CLIENT_ID"] = ask("  Paste the Web OAuth Client ID", secret=True)
+        env["WEB_OAUTH_CLIENT_SECRET"] = ask("  Paste the Web OAuth Client Secret", secret=True)
+        env["SESSION_SECRET"] = os.urandom(24).hex()
+        ok("Web review credentials saved (SESSION_SECRET generated)")
+
     # ── Write .env ────────────────────────────────────────────────────────────
     section("Writing .env file")
     with open(".env", "w", encoding="utf-8") as f:

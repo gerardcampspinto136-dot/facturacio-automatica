@@ -5,6 +5,8 @@ config/credentials/
 # Generated files
 data/invoices/
 data/invoice_counter.json
+data/pending/
+data/issued/
 
 # Python
 __pycache__/

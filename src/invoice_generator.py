@@ -74,9 +74,10 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
     elements.append(HRFlowable(width="100%", thickness=2, color=BRAND_DARK, spaceAfter=10))
 
     # ── Invoice title + number ───────────────────────────────────────────────
+    title_text = "FACTURA RECTIFICATIVA" if invoice.rectifies else "FACTURA"
     title_row = Table(
         [[
-            Paragraph("<b>FACTURA</b>", _style("InvTitle", fontSize=22, textColor=BRAND_DARK)),
+            Paragraph(f"<b>{title_text}</b>", _style("InvTitle", fontSize=22, textColor=BRAND_DARK)),
             Paragraph(
                 f"<b>N.º {invoice.invoice_number}</b>",
                 _style("InvNum", fontSize=13, alignment=TA_RIGHT, textColor=BRAND_DARK),
@@ -86,6 +87,15 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
     )
     title_row.setStyle(TableStyle([("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
     elements.append(title_row)
+
+    if invoice.rectifies:
+        elements.append(
+            Paragraph(
+                f"Rectifica y anula la factura <b>{invoice.rectifies}</b>.",
+                _style("Rectifies", fontSize=9, textColor=TEXT_MUTED),
+            )
+        )
+        elements.append(Spacer(1, 0.2 * cm))
 
     # ── Client info + date ───────────────────────────────────────────────────
     invoice_date = invoice.date.strftime("%d/%m/%Y")
