@@ -7,6 +7,9 @@ data/invoices/
 data/invoice_counter.json
 data/pending/
 data/issued/
+data/facturacio.db
+data/facturacio.db-wal
+data/facturacio.db-shm
 
 # Python
 __pycache__/
@@ -37,3 +40,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Tests
+.pytest_cache/
+

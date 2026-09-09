@@ -37,6 +37,16 @@ if __name__ == "__main__":
     )
     cfg = get_config()
 
+    # Import anything left by the earlier JSON-file store. No-op after the first run.
+    from src import store
+
+    imported = store.migrate_from_json()
+    if not imported["skipped"] and (imported["pending"] or imported["issued"]):
+        logger.info(
+            "Imported %s pending and %s issued invoices from the old JSON files",
+            imported["pending"], imported["issued"],
+        )
+
     if cfg.review_mode == "manual":
         _start_web(cfg)
         from src.scheduler import start_scheduler

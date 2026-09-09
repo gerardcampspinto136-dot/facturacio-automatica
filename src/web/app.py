@@ -286,8 +286,7 @@ async def approve(request: Request, token: str):
         return RedirectResponse("/", status_code=303)
     inv: InvoiceData = p["invoice"]
     inv.invoice_number = None  # force a fresh gap-free number on finalize
-    finalize_invoice(inv)
-    store.remove_pending(token)
+    finalize_invoice(inv, token=token)
     return RedirectResponse("/", status_code=303)
 
 

@@ -62,6 +62,11 @@ def create_rectifying_invoice(original_number: str) -> tuple[InvoiceData, str]:
     store.record_issued(rectifying)
     store.mark_rectified(original_number, rectifying.invoice_number)
 
+    # Cancelling a sale returns whatever it took out of stock.
+    from src import catalog
+
+    catalog.apply_invoice(original, ref=rectifying.invoice_number, sign=1)
+
     return rectifying, pdf_path
 
 
