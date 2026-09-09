@@ -278,6 +278,12 @@ class Session:
                 f"• {item.description} — {item.quantity:g} × "
                 f"{format_money(item.unit_price, config)} = {format_money(item.total, config)}"
             )
+        # Accepted, but worth flagging: an unusual id is often a mis-transcription.
+        if inv.client_id == "SIN NIF":
+            lines.append("⚠️ Sin identificador fiscal — revisa si la factura lo necesita.")
+        elif inv.client_id and not checklist.looks_spanish_tax_id(inv.client_id):
+            lines.append(f"⚠️ «{inv.client_id}» no tiene forma de NIF/CIF español. "
+                         "Lo uso igual, pero compruébalo.")
         lines.append("")
         lines.append(summary_lines(inv, config))
         if inv.notes:

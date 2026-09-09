@@ -18,8 +18,21 @@ from src.models import InvoiceData
 # debris, not to adjudicate the RFC.
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 
-# Spanish NIF/CIF/NIE shapes: 12345678A, B12345678, X1234567L.
-_TAX_ID_RE = re.compile(r"^[A-Za-z]?\d{7,8}[A-Za-z]?$")
+# A Spanish NIF/CIF/NIE: 12345678A, B12345678, X1234567L. Used to tell the user their
+# id looks unusual -- never to refuse it, because plenty of legitimate clients are not
+# Spanish and carry a VAT number, a passport, or a foreign tax id instead.
+_SPANISH_TAX_ID_RE = re.compile(r"^[A-Za-z]?\d{7,8}[A-Za-z]?$")
+
+# What counts as an identifier at all: letters and digits, plausibly long enough to be
+# one. This rejects "no me acuerdo" and "pepito" without adjudicating world tax law.
+_ANY_TAX_ID_RE = re.compile(r"^(?=.*\d)[A-Za-z0-9]{4,20}$")
+
+# Ways of saying the client has no tax id, for the cases where that is genuinely true
+# (a private individual abroad, say). The invoice records why it is missing.
+_NO_TAX_ID = {
+    "no tiene", "no tienen", "sin nif", "sin cif", "sin dni", "no tengo", "ninguno",
+    "no aplica", "n/a", "na", "omitir", "saltar", "sin identificador", "no en te",
+}
 
 FIELDS = {
     "client_name": {
@@ -52,8 +65,23 @@ def valid_email(value: Optional[str]) -> bool:
     return bool(value and _EMAIL_RE.match(value.strip()))
 
 
+def _clean_tax_id(value: Optional[str]) -> str:
+    return (value or "").strip().upper().replace("-", "").replace(" ", "").replace(".", "")
+
+
 def valid_tax_id(value: Optional[str]) -> bool:
-    return bool(value and _TAX_ID_RE.match(value.strip().replace("-", "").replace(" ", "")))
+    """Is this usable as a tax id at all? Deliberately permissive about the format."""
+    cleaned = _clean_tax_id(value)
+    if not cleaned:
+        return False
+    if cleaned == "SIN NIF".replace(" ", ""):
+        return True
+    return bool(_ANY_TAX_ID_RE.match(cleaned))
+
+
+def looks_spanish_tax_id(value: Optional[str]) -> bool:
+    """Does it match the Spanish NIF/CIF/NIE shape? Used only to warn."""
+    return bool(_SPANISH_TAX_ID_RE.match(_clean_tax_id(value)))
 
 
 def missing_fields(invoice: InvoiceData, config=None) -> list[str]:
@@ -132,11 +160,15 @@ def apply_answer(invoice: InvoiceData, field: str, answer: str) -> tuple[bool, O
         return True, None
 
     if field == "client_id":
-        candidate = answer.upper().replace("-", "").replace(" ", "")
+        if answer.strip().lower() in _NO_TAX_ID:
+            invoice.client_id = "SIN NIF"
+            return True, None
+        candidate = _clean_tax_id(answer)
         if not valid_tax_id(candidate):
             return False, (
-                f"«{answer}» no parece un NIF/CIF válido. "
-                "Por ejemplo: 12345678A o B12345678."
+                f"«{answer}» no me sirve como identificador fiscal. "
+                "Dime el NIF/CIF (por ejemplo 12345678A o B12345678), "
+                "el número de IVA si es de fuera, o «no tiene» si realmente no tiene."
             )
         invoice.client_id = candidate
         return True, None

@@ -370,6 +370,35 @@ async def cmd_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Keep the bot alive through transient failures.
+
+    A dropped connection while polling is normal on a laptop that sleeps or changes
+    network; without a handler python-telegram-bot logs a full traceback for each one and
+    the user is told nothing. Network errors are noted quietly; anything else gets a
+    short apology in the chat so a silent failure is never mistaken for success.
+    """
+    from telegram.error import NetworkError, TimedOut
+
+    error = context.error
+    if isinstance(error, (NetworkError, TimedOut)):
+        logger.warning("Network problem talking to Telegram: %s", error)
+        return
+
+    logger.error("Unhandled error", exc_info=error)
+    message = getattr(update, "message", None) or getattr(
+        getattr(update, "callback_query", None), "message", None
+    )
+    if message is not None:
+        try:
+            await message.reply_text(
+                "Ha fallado algo por mi parte y no he podido continuar. "
+                "Vuelve a intentarlo, o escribe /cancelar para empezar de cero."
+            )
+        except Exception:
+            logger.exception("Could not even report the error to the user")
+
+
 def run_bot() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -389,6 +418,7 @@ def run_bot() -> None:
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_error_handler(on_error)
 
     logger.info("Bot started, waiting for messages...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

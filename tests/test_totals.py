@@ -173,3 +173,46 @@ class TestAnswers:
         inv = invoice()
         ok, complaint = checklist.apply_answer(inv, "client_email", "   ")
         assert not ok and complaint
+
+
+class TestTaxIdIsPermissive:
+    """A Spanish NIF is the common case, not the only legitimate one.
+
+    Refusing anything that is not a Spanish NIF blocks every foreign client, and blocked
+    a real test with the id "1234Z". The rule is now: accept anything that is plausibly
+    an identifier, and warn when it does not look Spanish.
+    """
+
+    @pytest.mark.parametrize("value", [
+        "1234Z", "12345678A", "B12345678", "X1234567L",
+        "FR12345678901", "IE1234567T", "DE123456789",
+    ])
+    def test_plausible_identifiers_are_accepted(self, value):
+        assert checklist.valid_tax_id(value)
+
+    @pytest.mark.parametrize("value", ["pepito", "no me acuerdo", "123", "", None, "ABC"])
+    def test_non_identifiers_are_still_refused(self, value):
+        assert not checklist.valid_tax_id(value)
+
+    @pytest.mark.parametrize("value,spanish", [
+        ("12345678A", True), ("B12345678", True), ("X1234567L", True),
+        ("1234Z", False), ("FR12345678901", False),
+    ])
+    def test_spanish_shape_is_detected_for_warning_only(self, value, spanish):
+        assert checklist.looks_spanish_tax_id(value) is spanish
+
+    def test_client_with_no_tax_id_can_say_so(self):
+        inv = invoice(client_id=None)
+        ok, _ = checklist.apply_answer(inv, "client_id", "no tiene")
+        assert ok and inv.client_id == "SIN NIF"
+
+    def test_saying_no_tax_id_satisfies_the_checklist(self):
+        inv = invoice(client_id=None)
+        checklist.apply_answer(inv, "client_id", "no tiene")
+        assert "client_id" not in checklist.missing_fields(inv)
+
+    def test_the_complaint_explains_the_alternatives(self):
+        inv = invoice(client_id=None)
+        ok, complaint = checklist.apply_answer(inv, "client_id", "pepito")
+        assert not ok
+        assert "IVA" in complaint and "no tiene" in complaint
