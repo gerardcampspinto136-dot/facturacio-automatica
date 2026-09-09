@@ -28,6 +28,14 @@ class InvoiceData:
     notes: Optional[str] = None
     # When set, this is a rectifying (contra) invoice cancelling the given invoice number.
     rectifies: Optional[str] = None
+    # True  -> the amounts as dictated already contain VAT
+    # False -> VAT is added on top
+    # None  -> the speaker did not say; the company default decides
+    prices_include_tax: Optional[bool] = None
+    # Set once line prices have been converted to net, so it never happens twice.
+    prices_normalized: bool = False
+    # Link to the stored client record, when one was matched.
+    contact_id: Optional[int] = None
 
     @property
     def subtotal(self) -> float:

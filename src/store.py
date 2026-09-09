@@ -46,6 +46,7 @@ def invoice_to_dict(invoice: InvoiceData) -> dict:
         "date": invoice.date.isoformat() if invoice.date else None,
         "notes": invoice.notes,
         "rectifies": invoice.rectifies,
+        "prices_include_tax": invoice.prices_include_tax,
         "items": [_item_to_dict(i) for i in invoice.items],
     }
 
@@ -72,6 +73,7 @@ def invoice_from_dict(data: dict) -> InvoiceData:
         date=inv_date,
         notes=data.get("notes"),
         rectifies=data.get("rectifies"),
+        prices_include_tax=data.get("prices_include_tax"),
     )
 
 
@@ -106,6 +108,12 @@ def _row_to_invoice(conn, row) -> InvoiceData:
         date=date.fromisoformat(raw_date) if raw_date else date.today(),
         notes=row["notes"],
         rectifies=row["rectifies"],
+        prices_include_tax=(
+            None if row["prices_include_tax"] is None else bool(row["prices_include_tax"])
+        ),
+        # Line prices are stored net, so they must not be converted a second time.
+        prices_normalized=True,
+        contact_id=row["contact_id"],
     )
 
 
@@ -147,8 +155,8 @@ def add_pending(invoice: InvoiceData, draft_path: str) -> str:
         cur = conn.execute(
             "INSERT INTO invoices "
             "(status, token, client_name, client_email, client_address, client_id, "
-            " date, notes, rectifies, draft_path, created_at) "
-            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " date, notes, rectifies, prices_include_tax, contact_id, draft_path, created_at) "
+            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 token,
                 invoice.client_name,
@@ -158,6 +166,8 @@ def add_pending(invoice: InvoiceData, draft_path: str) -> str:
                 invoice.date.isoformat() if invoice.date else date.today().isoformat(),
                 invoice.notes,
                 invoice.rectifies,
+                None if invoice.prices_include_tax is None else int(invoice.prices_include_tax),
+                invoice.contact_id,
                 draft_path,
                 datetime.now().isoformat(timespec="seconds"),
             ),
@@ -198,7 +208,7 @@ def update_pending(token: str, invoice: InvoiceData, draft_path: Optional[str] =
             raise KeyError(f"Pending invoice {token} not found")
         conn.execute(
             "UPDATE invoices SET client_name = ?, client_email = ?, client_address = ?, "
-            "client_id = ?, date = ?, notes = ?"
+            "client_id = ?, date = ?, notes = ?, prices_include_tax = ?"
             + (", draft_path = ?" if draft_path is not None else "")
             + " WHERE id = ?",
             (
@@ -208,6 +218,7 @@ def update_pending(token: str, invoice: InvoiceData, draft_path: Optional[str] =
                 invoice.client_id,
                 invoice.date.isoformat() if invoice.date else date.today().isoformat(),
                 invoice.notes,
+                None if invoice.prices_include_tax is None else int(invoice.prices_include_tax),
                 *([draft_path] if draft_path is not None else []),
                 row["id"],
             ),
@@ -275,6 +286,7 @@ def record_issued(invoice: InvoiceData, due_days: int = 30) -> None:
             conn.execute(
                 "UPDATE invoices SET status = 'issued', client_name = ?, client_email = ?, "
                 "client_address = ?, client_id = ?, date = ?, notes = ?, rectifies = ?, "
+                "prices_include_tax = ?, contact_id = COALESCE(?, contact_id), "
                 "issued_at = COALESCE(issued_at, ?), due_date = COALESCE(due_date, ?) "
                 "WHERE id = ?",
                 (
@@ -285,6 +297,8 @@ def record_issued(invoice: InvoiceData, due_days: int = 30) -> None:
                     inv_date.isoformat(),
                     invoice.notes,
                     invoice.rectifies,
+                    None if invoice.prices_include_tax is None else int(invoice.prices_include_tax),
+                    invoice.contact_id,
                     issued_at,
                     due,
                     existing["id"],
@@ -295,8 +309,8 @@ def record_issued(invoice: InvoiceData, due_days: int = 30) -> None:
             cur = conn.execute(
                 "INSERT INTO invoices "
                 "(status, number, client_name, client_email, client_address, client_id, "
-                " date, due_date, notes, rectifies, issued_at) "
-                "VALUES ('issued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " date, due_date, notes, rectifies, prices_include_tax, contact_id, issued_at) "
+                "VALUES ('issued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     invoice.invoice_number,
                     invoice.client_name,
@@ -307,6 +321,8 @@ def record_issued(invoice: InvoiceData, due_days: int = 30) -> None:
                     due,
                     invoice.notes,
                     invoice.rectifies,
+                    None if invoice.prices_include_tax is None else int(invoice.prices_include_tax),
+                    invoice.contact_id,
                     issued_at,
                 ),
             )

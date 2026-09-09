@@ -107,6 +107,48 @@ def find_by_name(name: str, kind: str = CLIENT) -> Optional[dict]:
     return dict(rows[0]) if len(rows) == 1 else None
 
 
+def find_candidates(name: str, kind: str = CLIENT) -> list[dict]:
+    """Every contact that could be meant by `name`, so the caller can disambiguate.
+
+    find_by_name() refuses to guess between two matches and returns None; this returns
+    both, so the bot can ask "hay dos Gerard Camps, ¿cuál?" instead of silently picking.
+    An exact match short-circuits: if one contact is called exactly that, two others
+    merely containing the words are not real alternatives.
+    """
+    if not name or not name.strip():
+        return []
+    needle = name.strip()
+    conn = db.connect()
+
+    exact = conn.execute(
+        "SELECT * FROM contacts WHERE kind = ? AND active = 1 AND name = ? COLLATE NOCASE",
+        (kind, needle),
+    ).fetchall()
+    if len(exact) == 1:
+        return [dict(exact[0])]
+    if len(exact) > 1:
+        return [dict(r) for r in exact]
+
+    rows = conn.execute(
+        "SELECT * FROM contacts WHERE kind = ? AND active = 1 "
+        "AND name LIKE ? COLLATE NOCASE ORDER BY name COLLATE NOCASE",
+        (kind, f"%{needle}%"),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def describe(contact: dict) -> str:
+    """A short line distinguishing one contact from another with the same name."""
+    bits = []
+    if contact.get("tax_id"):
+        bits.append(contact["tax_id"])
+    if contact.get("email"):
+        bits.append(contact["email"])
+    if contact.get("address"):
+        bits.append(contact["address"].split(",")[0])
+    return f"{contact['name']}" + (f" — {' · '.join(bits)}" if bits else "")
+
+
 def find_or_create(kind: str, name: str, **fields) -> int:
     """Return the id of the matching contact, creating it if there is no match."""
     found = find_by_name(name, kind)

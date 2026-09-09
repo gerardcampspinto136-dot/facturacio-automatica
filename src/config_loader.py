@@ -22,6 +22,15 @@ class CompanyConfig:
         self.currency_symbol = invoice.get("currency_symbol", "€")
         self.payment_terms = invoice.get("payment_terms", "30 días")
         self.bank_account = invoice.get("bank_account", "")
+        # True  -> a dictated price is assumed to already contain VAT
+        # False -> VAT is added on top (the usual B2B convention)
+        # Saying "IVA incluido" or "más IVA" out loud overrides this per invoice.
+        self.prices_include_tax = bool(invoice.get("prices_include_tax", False))
+        # Fields an invoice must have before it can be issued.
+        required = data.get("required_fields", {}) or {}
+        self.require_email = bool(required.get("client_email", True))
+        self.require_tax_id = bool(required.get("client_id", True))
+        self.require_address = bool(required.get("client_address", False))
 
         email_cfg = data.get("email", {})
         self.email_subject_template = email_cfg.get(

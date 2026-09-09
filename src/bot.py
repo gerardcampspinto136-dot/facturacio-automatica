@@ -2,21 +2,23 @@ import logging
 import os
 import tempfile
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
 )
 
-from src import bills, store
+from src import bills, conversation, store
 from src.config_loader import get_config
 from src.finalize import finalize_invoice
 from src.invoice_generator import generate_invoice_pdf
 from src.parser import parse_invoice_from_transcript
 from src.rectify import create_rectifying_invoice
+from src.totals import compute_totals, format_money
 from src.transcription import transcribe_audio
 
 logging.basicConfig(
@@ -26,43 +28,45 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _WELCOME = (
-    "Hola! Soy tu asistente de facturación automatica.\n\n"
-    "Envíame un *mensaje de voz* con los datos de la factura y me encargaré de todo:\n\n"
-    "• Transcribir el audio\n"
-    "• Extraer los datos del cliente\n"
-    "• Generar la factura en PDF\n"
-    "• Registrarla en Google Sheets\n"
-    "• Enviarla por email al cliente\n\n"
-    "Según tu configuración, la factura se envía al momento (modo automático) "
-    "o queda pendiente de revisión en la web (modo manual).\n\n"
+    "Hola! Soy tu asistente de facturación.\n\n"
+    "Mándame un *audio* o escríbeme en texto, como se lo dirías a un compañero:\n"
+    "_«Factura para Talleres Puig, 300 euros más IVA por la reparación»_\n\n"
+    "Si me falta algo obligatorio (email, NIF...) te lo pido antes de emitir nada. "
+    "Cuando esté completa te la enseño y tú decides si se envía.\n\n"
     "Comandos:\n"
-    "• /ayuda — ejemplo de mensaje de voz\n"
-    "• /anular <número> — emitir una factura rectificativa que anula una factura ya emitida\n"
-    "• /gasto <proveedor> <importe> — anotar una factura recibida de un proveedor\n"
-    "• /pagos — qué tienes que pagar y qué te tienen que pagar\n"
-    "• /stock — productos que han llegado al punto de pedido"
+    "• /ayuda — cómo hablarme y ejemplos\n"
+    "• /clientes — clientes que ya tengo guardados\n"
+    "• /cancelar — descartar la factura en curso\n"
+    "• /anular <número> — emitir una rectificativa\n"
+    "• /gasto <proveedor> <importe> — anotar una factura de proveedor\n"
+    "• /pagos — qué debes y qué te deben\n"
+    "• /stock — productos por reponer"
 )
 
 _HELP = (
-    "Ejemplo de mensaje de voz:\n\n"
-    "_\"Factura para Juan García, email juan@ejemplo.com, dirección Calle Mayor 5 Madrid, "
-    "DNI doce tres cuatro cinco seis siete ocho A. "
-    "Le he hecho tres horas de trabajo a cincuenta euros la hora "
-    "y materiales por cien euros.\"_\n\n"
-    "Para anular una factura ya emitida:\n"
-    "`/anular 2026-0007`\n\n"
-    "Para anotar una factura que te ha llegado de un proveedor:\n"
-    "`/gasto Ferretería Puig 242,50 F-2026/88`\n"
-    "El vencimiento se calcula solo según las condiciones de pago del proveedor.\n\n"
-    "`/pagos` te resume lo que debes y lo que te deben. `/stock` avisa de lo que hay que reponer."
+    "*Cómo pedirme una factura*\n"
+    "Por audio o por texto, da igual:\n"
+    "_«Factura para Juan García, email juan arroba ejemplo punto es, "
+    "NIF 12345678A, tres horas a 50 euros la hora»_\n\n"
+    "*El IVA*\n"
+    "• «300 euros *más IVA*» → 300 de base, 363 en total\n"
+    "• «300 euros *IVA incluido*» → 247,93 de base, 300 en total\n"
+    "• Si no dices nada, uso lo que tengas puesto en `company.yaml` "
+    "(`prices_include_tax`).\n"
+    "También puedes cambiarlo con el botón *Cambiar IVA* antes de enviar.\n\n"
+    "*Datos obligatorios*\n"
+    "Nombre, concepto e importe, email y NIF/CIF. Si falta algo te lo pregunto "
+    "uno a uno. Lo que exijo se configura en `required_fields`.\n\n"
+    "*Clientes*\n"
+    "Guardo cada cliente la primera vez. Después basta con «factura para Talleres Puig» "
+    "y ya sé su email y su NIF. Si hay dos con el mismo nombre, te pregunto cuál.\n\n"
+    "*Para enviarla*\n"
+    "Pulsa *Enviar* o contéstame «sí, envíala». Para descartarla, «no» o /cancelar.\n\n"
+    "*Otras cosas*\n"
+    "`/anular 2026-0007` — factura rectificativa\n"
+    "`/gasto Ferretería Puig 242,50 F-2026/88` — anotar una factura de proveedor\n"
+    "`/pagos` — cobros y pagos pendientes · `/stock` — qué reponer"
 )
-
-
-def _totals(invoice, config) -> tuple[float, float, float]:
-    subtotal = invoice.subtotal
-    tax_amount = round(subtotal * config.tax_rate / 100, 2)
-    total = round(subtotal + tax_amount, 2)
-    return subtotal, tax_amount, total
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -115,7 +119,7 @@ async def cmd_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         f"✅ Anotado: *{bill['supplier_name']}* — {amount:.2f} {config.currency_symbol}\n"
         f"Vence el *{bill['due_date']}*.\n"
-        f"Total pendiente de pagar: {bills.total_owed():.2f} {config.currency_symbol}",
+        f"Total pendiente de pagar: {format_money(bills.total_owed(), config)}",
         parse_mode="Markdown",
     )
 
@@ -165,7 +169,7 @@ async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try:
         rectifying, pdf_path = create_rectifying_invoice(number)
         config = get_config()
-        _, _, total = _totals(rectifying, config)
+        _, _, total = compute_totals(rectifying, config)
         with open(pdf_path, "rb") as pdf_file:
             await update.message.reply_document(
                 document=pdf_file,
@@ -173,7 +177,7 @@ async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 caption=(
                     f"✅ Factura rectificativa *{rectifying.invoice_number}*\n"
                     f"Anula la factura {number}\n"
-                    f"Importe: {total:,.2f} {config.currency_symbol}"
+                    f"Importe: {format_money(total, config)}"
                 ),
                 parse_mode="Markdown",
             )
@@ -185,14 +189,30 @@ async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await status.edit_text(f"Error al anular la factura:\n`{exc}`", parse_mode="Markdown")
 
 
+def _keyboard(buttons):
+    if not buttons:
+        return None
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(label, callback_data=data)] for label, data in buttons]
+    )
+
+
+async def _send(target, replies) -> None:
+    """Deliver the conversation's replies to Telegram."""
+    for reply in replies:
+        await target.reply_text(
+            reply.text,
+            parse_mode="Markdown" if reply.markdown else None,
+            reply_markup=_keyboard(reply.buttons),
+        )
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     status_msg = await update.message.reply_text("Recibido. Descargando audio...")
-
     tmp_path: str | None = None
     try:
         voice = update.message.voice or update.message.audio
         tg_file = await context.bot.get_file(voice.file_id)
-
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
             tmp_path = tmp.name
         await tg_file.download_to_drive(tmp_path)
@@ -202,88 +222,152 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.info("Transcript: %s", transcript)
 
         await status_msg.edit_text(
-            f"Transcripción:\n_{transcript}_\n\nExtrayendo datos de la factura...",
+            f"Transcripción:\n_{transcript}_\n\nExtrayendo datos...",
             parse_mode="Markdown",
         )
-
-        invoice = parse_invoice_from_transcript(transcript)
-        if not invoice.items:
-            await status_msg.edit_text(
-                "No he podido detectar ningún concepto a facturar. "
-                "Prueba de nuevo indicando el trabajo, las horas o el importe."
-            )
-            return
-
-        config = get_config()
-        if config.review_mode == "auto":
-            await _handle_auto(update, status_msg, invoice, config)
-        else:
-            await _handle_manual(update, status_msg, invoice, config)
+        await _begin_invoice(update, status_msg, transcript)
 
     except Exception as exc:
-        logger.error("Error processing invoice", exc_info=True)
+        logger.error("Error processing the audio", exc_info=True)
         await status_msg.edit_text(
-            f"Error al procesar la factura:\n`{exc}`\n\nRevisa los logs para más detalles.",
-            parse_mode="Markdown",
+            f"Error al procesar el audio:\n`{exc}`", parse_mode="Markdown"
         )
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
 
-async def _handle_auto(update, status_msg, invoice, config) -> None:
-    await status_msg.edit_text("Modo automático: generando y enviando la factura...")
-    pdf_path = finalize_invoice(invoice)  # assigns number, logs, emails
-    _, _, total = _totals(invoice, config)
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Text works exactly like voice: continue the dialogue, or start a new invoice."""
+    text = (update.message.text or "").strip()
+    session = conversation.session_for(update.effective_chat.id)
 
-    if invoice.client_email:
-        sent_line = f"Enviada a: {invoice.client_email}"
-    else:
-        sent_line = "No enviada por email (falta el email del cliente)"
+    if session.active:
+        if session.awaiting == conversation.AWAIT_CONFIRM and conversation.says_yes(text):
+            await _approve(update, session)
+            return
+        await _send(update.message, session.handle_text(text))
+        return
 
-    with open(pdf_path, "rb") as pdf_file:
-        await update.message.reply_document(
-            document=pdf_file,
-            filename=f"Factura_{invoice.invoice_number}.pdf",
-            caption=(
-                f"✅ Factura *{invoice.invoice_number}* generada\n"
-                f"Cliente: {invoice.client_name}\n"
-                f"Total: {total:,.2f} {config.currency_symbol}\n"
-                f"{sent_line}"
-            ),
-            parse_mode="Markdown",
+    status_msg = await update.message.reply_text("Leyendo los datos de la factura...")
+    await _begin_invoice(update, status_msg, text)
+
+
+async def _begin_invoice(update, status_msg, text: str) -> None:
+    """Parse a dictation or a typed request and start the review dialogue."""
+    session = conversation.session_for(update.effective_chat.id)
+    try:
+        invoice = parse_invoice_from_transcript(text)
+    except Exception as exc:
+        logger.error("Could not parse the invoice", exc_info=True)
+        await status_msg.edit_text(
+            f"No he podido leer los datos:\n`{exc}`", parse_mode="Markdown"
         )
+        return
+
+    replies = session.start(invoice)
     await status_msg.delete()
+    await _send(update.message, replies)
 
 
-async def _handle_manual(update, status_msg, invoice, config) -> None:
-    await status_msg.edit_text("Generando borrador de la factura...")
+async def _approve(update, session) -> None:
+    """Issue the invoice the user has just confirmed."""
+    message = update.message or update.callback_query.message
+    invoice = session.invoice
+    config = get_config()
 
-    # No invoice number is consumed yet — it is assigned on approval, keeping the
-    # sequential numbering gap-free.
-    invoice.invoice_number = "BORRADOR"
-    import uuid
+    status = await message.reply_text("Generando y enviando la factura...")
+    try:
+        new_contact = session.contact_is_new()
+        pdf_path = finalize_invoice(invoice)
+        _, _, total = compute_totals(invoice, config)
 
-    draft_path = f"data/invoices/_borrador_{uuid.uuid4().hex[:8]}.pdf"
-    generate_invoice_pdf(invoice, draft_path)
-    store.add_pending(invoice, draft_path)
+        saved_note = ""
+        if new_contact and session.save_contact():
+            saved_note = f"\n\n💾 He guardado a *{invoice.client_name}* en tus clientes."
 
-    pending = store.count_pending()
-    _, _, total = _totals(invoice, config)
+        if invoice.client_email:
+            sent = f"📧 Enviada a {invoice.client_email}"
+        else:
+            sent = "⚠️ No enviada: falta el email del cliente"
 
-    with open(draft_path, "rb") as pdf_file:
-        await update.message.reply_document(
-            document=pdf_file,
-            filename="Borrador_factura.pdf",
-            caption=(
-                f"📥 Guardada para revisión ({pending} pendiente"
-                f"{'s' if pending != 1 else ''})\n"
-                f"Cliente: {invoice.client_name}\n"
-                f"Total: {total:,.2f} {config.currency_symbol}\n\n"
-                f"Revísala y envíala desde:\n{config.web_base_url}"
-            ),
+        with open(pdf_path, "rb") as pdf_file:
+            await message.reply_document(
+                document=pdf_file,
+                filename=f"Factura_{invoice.invoice_number}.pdf",
+                caption=(
+                    f"✅ Factura *{invoice.invoice_number}*\n"
+                    f"Cliente: {invoice.client_name}\n"
+                    f"Total: {format_money(total, config)}\n"
+                    f"{sent}{saved_note}"
+                ),
+                parse_mode="Markdown",
+            )
+        await status.delete()
+    except Exception as exc:
+        logger.error("Could not issue the invoice", exc_info=True)
+        await status.edit_text(
+            f"Error al emitir la factura:\n`{exc}`", parse_mode="Markdown"
         )
-    await status_msg.delete()
+    finally:
+        conversation.clear(update.effective_chat.id)
+
+
+async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    session = conversation.session_for(update.effective_chat.id)
+    data = query.data or ""
+
+    if not session.active:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("Esa factura ya no está activa.")
+        return
+
+    if data == "approve":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await _approve(update, session)
+        return
+
+    if data == "cancel":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await _send(query.message, session.cancel())
+        return
+
+    if data == "toggle_tax":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await _send(query.message, session.toggle_tax())
+        return
+
+    if data.startswith("contact:"):
+        await query.edit_message_reply_markup(reply_markup=None)
+        await _send(query.message, session.pick_contact(int(data.split(":", 1)[1])))
+        return
+
+
+async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    session = conversation.session_for(update.effective_chat.id)
+    if not session.active:
+        await update.message.reply_text("No hay ninguna factura en marcha.")
+        return
+    await _send(update.message, session.cancel())
+
+
+async def cmd_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List the stored clients, so it is obvious what the bot already knows."""
+    from src import contacts
+
+    clients = contacts.list_all(contacts.CLIENT)
+    if not clients:
+        await update.message.reply_text(
+            "Todavía no tienes clientes guardados. "
+            "Se guardan solos cuando emites la primera factura a cada uno."
+        )
+        return
+    lines = [f"*Clientes guardados ({len(clients)})*", ""]
+    for c in clients:
+        lines.append(f"• {contacts.describe(c)}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 def run_bot() -> None:
@@ -300,7 +384,11 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("gasto", cmd_gasto))
     app.add_handler(CommandHandler("pagos", cmd_pagos))
     app.add_handler(CommandHandler("stock", cmd_stock))
+    app.add_handler(CommandHandler("cancelar", cmd_cancelar))
+    app.add_handler(CommandHandler("clientes", cmd_clientes))
+    app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     logger.info("Bot started, waiting for messages...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

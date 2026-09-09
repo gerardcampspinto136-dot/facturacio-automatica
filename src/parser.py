@@ -40,7 +40,8 @@ JSON schema:
       "total": "number"
     }
   ],
-  "notes": "string or null"
+  "notes": "string or null",
+  "prices_include_tax": "true | false | null"
 }
 
 Rules:
@@ -57,7 +58,16 @@ Rules:
   them additively: "ciento ochenta" / "cent vuitanta" is 180, not 80; "mil doscientos
   cincuenta" is 1250; "veinticuatro con cincuenta" / "vint-i-quatre amb cinquanta" is
   24.50. Check that every amount you output uses every part of what was said.
-- Use null for anything genuinely not mentioned. Never invent an email or a tax id."""
+- Use null for anything genuinely not mentioned. Never invent an email or a tax id.
+- prices_include_tax records how the amounts were quoted, and is NOT a note:
+    true  if the speaker said the price already contains VAT — "IVA incluido",
+          "con IVA", "IVA inclòs", "amb IVA", "VAT included", "todo incluido".
+    false if the speaker said VAT goes on top — "más IVA", "mas IVA", "sin IVA",
+          "más el IVA", "més IVA", "IVA aparte", "plus VAT".
+    null  if they did not say either way.
+  Never put the VAT instruction in "notes" and never change the amounts yourself:
+  report the figures exactly as spoken and let prices_include_tax say what they mean.
+- "notes" is only for a genuine remark about the job. If there is none, use null."""
 
 
 def _which_provider() -> str:
@@ -168,7 +178,15 @@ def parse_invoice_from_transcript(transcript: str) -> InvoiceData:
             )
         )
 
+    raw_flag = data.get("prices_include_tax")
+    if isinstance(raw_flag, str):
+        lowered = raw_flag.strip().lower()
+        raw_flag = True if lowered in ("true", "si", "sí", "yes") else (
+            False if lowered in ("false", "no") else None
+        )
+
     return InvoiceData(
+        prices_include_tax=raw_flag if isinstance(raw_flag, bool) else None,
         client_name=data.get("client_name") or "",
         client_email=data.get("client_email") or "",
         client_address=data.get("client_address"),

@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from src import bills, store
+from src.totals import compute_totals, format_money as _fmt
 from src.config_loader import get_config
 from src.finalize import finalize_invoice
 from src.invoice_generator import generate_invoice_pdf
@@ -118,15 +119,11 @@ def _page(title: str, body: str, user: str | None = None) -> HTMLResponse:
 
 
 def _money(value: float) -> str:
-    cfg = get_config()
-    return f"{value:,.2f} {cfg.currency_symbol}"
+    return _fmt(value, get_config())
 
 
 def _totals(invoice: InvoiceData):
-    cfg = get_config()
-    subtotal = invoice.subtotal
-    tax = round(subtotal * cfg.tax_rate / 100, 2)
-    return subtotal, tax, round(subtotal + tax, 2)
+    return compute_totals(invoice, get_config())
 
 
 # ── Auth routes ──────────────────────────────────────────────────────────────

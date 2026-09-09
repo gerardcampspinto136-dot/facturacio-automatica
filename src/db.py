@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     date           TEXT NOT NULL,
     due_date       TEXT,
     notes          TEXT,
+    prices_include_tax INTEGER,
     rectifies      TEXT,
     rectified_by   TEXT,
     draft_path     TEXT,
@@ -162,8 +163,26 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=15, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _upgrade(conn)
     _local.conn = conn
     return conn
+
+
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS silently does nothing
+# to a table that already exists, so new columns have to be added explicitly.
+_ADDED_COLUMNS = {
+    "invoices": [
+        ("prices_include_tax", "INTEGER"),
+    ],
+}
+
+
+def _upgrade(conn: sqlite3.Connection) -> None:
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def close() -> None:

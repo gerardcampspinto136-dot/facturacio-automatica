@@ -10,6 +10,7 @@ from googleapiclient.discovery import build
 from src.config_loader import get_config
 from src.google_auth import get_credentials
 from src.models import InvoiceData
+from src.totals import compute_totals, format_money
 
 
 def send_email(to: str, subject: str, body: str, pdf_path: Optional[str] = None,
@@ -43,9 +44,7 @@ def send_email(to: str, subject: str, body: str, pdf_path: Optional[str] = None,
 def send_invoice_email(invoice: InvoiceData, pdf_path: str) -> None:
     config = get_config()
 
-    subtotal = invoice.subtotal
-    tax_amount = round(subtotal * config.tax_rate / 100, 2)
-    total = round(subtotal + tax_amount, 2)
+    _, _, total = compute_totals(invoice, config)
 
     subject = config.email_subject_template.format(
         invoice_number=invoice.invoice_number,
@@ -54,7 +53,7 @@ def send_invoice_email(invoice: InvoiceData, pdf_path: str) -> None:
     body = config.email_body_template.format(
         client_name=invoice.client_name,
         invoice_number=invoice.invoice_number,
-        total=f"{total:,.2f} {config.currency_symbol}",
+        total=format_money(total, config),
         company_name=config.name,
         company_phone=config.phone,
         company_email=config.email,

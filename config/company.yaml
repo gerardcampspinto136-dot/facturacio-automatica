@@ -18,6 +18,22 @@ invoice:
   currency_symbol: "€"
   payment_terms: "30 días"
   bank_account: "ES91 2100 0418 4502 0005 1332"
+  # ¿Los precios que dictas ya llevan el IVA dentro?
+  #   false → "150 euros" significa 150 + IVA  = 181,50 (lo habitual entre empresas)
+  #   true  → "150 euros" significa 150 con IVA dentro = 123,97 + 26,03 de IVA
+  # Digas lo que digas en el audio manda: "IVA incluido" o "más IVA" cambia
+  # el criterio solo para esa factura.
+  prices_include_tax: false
+
+# ============================================================
+#  DATOS OBLIGATORIOS
+#  El bot los pedirá antes de emitir la factura si faltan.
+#  El nombre del cliente y al menos un concepto son siempre obligatorios.
+# ============================================================
+required_fields:
+  client_email: true     # necesario para poder enviarla por email
+  client_id: true        # NIF/CIF — obligatorio en una factura española
+  client_address: false  # recomendable, pero no lo exigimos por defecto
 
 review:
   # "auto"   → la factura se envía al cliente inmediatamente (a tu propio riesgo;
