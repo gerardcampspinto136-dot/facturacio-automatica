@@ -11,7 +11,7 @@ from telegram.ext import (
     filters,
 )
 
-from src import store
+from src import bills, store
 from src.config_loader import get_config
 from src.finalize import finalize_invoice
 from src.invoice_generator import generate_invoice_pdf
@@ -37,7 +37,10 @@ _WELCOME = (
     "o queda pendiente de revisión en la web (modo manual).\n\n"
     "Comandos:\n"
     "• /ayuda — ejemplo de mensaje de voz\n"
-    "• /anular <número> — emitir una factura rectificativa que anula una factura ya emitida"
+    "• /anular <número> — emitir una factura rectificativa que anula una factura ya emitida\n"
+    "• /gasto <proveedor> <importe> — anotar una factura recibida de un proveedor\n"
+    "• /pagos — qué tienes que pagar y qué te tienen que pagar\n"
+    "• /stock — productos que han llegado al punto de pedido"
 )
 
 _HELP = (
@@ -47,7 +50,11 @@ _HELP = (
     "Le he hecho tres horas de trabajo a cincuenta euros la hora "
     "y materiales por cien euros.\"_\n\n"
     "Para anular una factura ya emitida:\n"
-    "`/anular 2026-0007`"
+    "`/anular 2026-0007`\n\n"
+    "Para anotar una factura que te ha llegado de un proveedor:\n"
+    "`/gasto Ferretería Puig 242,50 F-2026/88`\n"
+    "El vencimiento se calcula solo según las condiciones de pago del proveedor.\n\n"
+    "`/pagos` te resume lo que debes y lo que te deben. `/stock` avisa de lo que hay que reponer."
 )
 
 
@@ -74,6 +81,73 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "para recibir aquí los avisos de facturas pendientes.",
         parse_mode="Markdown",
     )
+
+
+async def cmd_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log a supplier bill: /gasto <proveedor> <importe> [referencia]
+
+    The amount is taken as the last numeric argument so the supplier name can contain
+    spaces without needing quotes -- dictating "Ferreteria Puig 242" on a phone is the
+    whole point of having this as a command.
+    """
+    args = list(context.args or [])
+    amount = None
+    for i in range(len(args) - 1, -1, -1):
+        try:
+            amount = float(args[i].replace(",", ".").replace("€", ""))
+            reference = " ".join(args[i + 1:]).strip() or None
+            supplier = " ".join(args[:i]).strip()
+            break
+        except ValueError:
+            continue
+
+    if amount is None or not supplier:
+        await update.message.reply_text(
+            "Uso: `/gasto <proveedor> <importe> [su nº de factura]`\n"
+            "Ejemplo: `/gasto Ferretería Puig 242,50 F-2026/88`",
+            parse_mode="Markdown",
+        )
+        return
+
+    bill_id = bills.create(supplier, amount, reference=reference)
+    bill = bills.get(bill_id)
+    config = get_config()
+    await update.message.reply_text(
+        f"✅ Anotado: *{bill['supplier_name']}* — {amount:.2f} {config.currency_symbol}\n"
+        f"Vence el *{bill['due_date']}*.\n"
+        f"Total pendiente de pagar: {bills.total_owed():.2f} {config.currency_symbol}",
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_pagos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show what is owed out and what is owed in, on demand."""
+    from src.notify import build_money_digest
+
+    config = get_config()
+    digest = build_money_digest(
+        bills.due_soon(within_days=config.bills_due_within_days), store.list_unpaid()
+    )
+    await update.message.reply_text(
+        digest or "No hay pagos ni cobros pendientes. 🎉"
+    )
+
+
+async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List products that have reached their reorder point."""
+    from src import catalog
+
+    low = catalog.low_stock()
+    if not low:
+        await update.message.reply_text("Todo el stock está por encima del punto de pedido. 👍")
+        return
+    lines = ["📦 Stock bajo:"]
+    for p in low[:20]:
+        lines.append(
+            f"  • {p['name']}: quedan {p['stock_qty']:g} {p['unit']} "
+            f"(punto de pedido {p['reorder_point']:g})"
+        )
+    await update.message.reply_text("\n".join(lines))
 
 
 async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -223,6 +297,9 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("chatid", cmd_chatid))
     app.add_handler(CommandHandler("anular", cmd_anular))
+    app.add_handler(CommandHandler("gasto", cmd_gasto))
+    app.add_handler(CommandHandler("pagos", cmd_pagos))
+    app.add_handler(CommandHandler("stock", cmd_stock))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
 
     logger.info("Bot started, waiting for messages...")

@@ -37,6 +37,21 @@ review:
     host: "127.0.0.1"
     port: 8000
 
+
+# ============================================================
+#  AVISOS DE DINERO Y STOCK
+#  Se envían por los mismos canales que review.notify.channels.
+# ============================================================
+alerts:
+  # Resumen de pagos a proveedores + facturas sin cobrar.
+  # Vacío ("") para desactivarlo. Formatos: 1d, 3d, 1w, 2w.
+  money_schedule: "1w"
+  # Cuántos días vista se incluyen en el aviso de pagos a proveedores
+  # (las facturas ya vencidas se incluyen siempre).
+  bills_due_within_days: 7
+  # Aviso de productos que han llegado a su punto de pedido.
+  stock_schedule: "1w"
+
 email:
   subject_template: "Factura {invoice_number} - {company_name}"
   body_template: |

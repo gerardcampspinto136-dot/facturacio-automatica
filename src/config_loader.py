@@ -42,6 +42,13 @@ class CompanyConfig:
         self.notify_email = notify.get("email", "")
         self.notify_telegram_chat_id = notify.get("telegram_chat_id", 0)
 
+        # ── Money and stock alerts ───────────────────────────────────────────
+        alerts = data.get("alerts", {}) or {}
+        # Empty string / null turns a job off entirely.
+        self.money_schedule = alerts.get("money_schedule", "1w") or ""
+        self.stock_schedule = alerts.get("stock_schedule", "1w") or ""
+        self.bills_due_within_days = int(alerts.get("bills_due_within_days", 7))
+
         web = review.get("web", {}) or {}
         self.web_base_url = str(web.get("base_url", "http://localhost:8000")).rstrip("/")
         self.web_host = web.get("host", "127.0.0.1")

@@ -13,7 +13,7 @@ from datetime import date
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from src import store
+from src import bills, store
 from src.config_loader import get_config
 from src.finalize import finalize_invoice
 from src.invoice_generator import generate_invoice_pdf
@@ -93,6 +93,9 @@ table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; }
 td.num, th.num { text-align: right; }
 .empty { text-align: center; color: #6e7781; padding: 40px 0; }
+.billform { display: grid; grid-template-columns: 2fr 1fr 1.5fr 1fr auto; gap: 8px;
+  align-items: center; margin-top: 10px; }
+@media (max-width: 700px) { .billform { grid-template-columns: 1fr; } }
 .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #e2e8f0; color: #1a202c; }
 """
 
@@ -103,6 +106,7 @@ def _page(title: str, body: str, user: str | None = None) -> HTMLResponse:
         nav = (
             f'<div class="row" style="gap:14px;align-items:center">'
             f'<a href="/">Pendientes</a><a href="/issued">Emitidas</a>'
+            f'<a href="/bills">Proveedores</a><a href="/receivables">Cobros</a>'
             f'<span class="muted">{html.escape(user)} · <a href="/logout">salir</a></span></div>'
         )
     return HTMLResponse(
@@ -344,3 +348,148 @@ async def rectify_route(request: Request, number: str):
     except ValueError as exc:
         return _page("No se pudo anular", f"<div class='card'>{html.escape(str(exc))}</div>", user)
     return RedirectResponse("/issued", status_code=303)
+
+
+# ── Supplier bills ───────────────────────────────────────────────────────────
+
+@app.get("/bills", response_class=HTMLResponse)
+async def bills_page(request: Request):
+    user = _user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    unpaid = bills.list_all(unpaid_only=True)
+    owed = bills.total_owed()
+    overdue = bills.total_owed(overdue_only=True)
+
+    head = (
+        f"<div class='card'><div class='row'>"
+        f"<div><b>Pendiente de pagar</b><br>"
+        f"<span class='muted'>{len(unpaid)} factura(s) de proveedor</span></div>"
+        f"<div class='total'>{_money(owed)}</div></div>"
+        + (f"<div class='muted'>De las cuales <b>{_money(overdue)}</b> ya vencidas.</div>"
+           if overdue else "")
+        + "</div>"
+    )
+
+    form = (
+        "<div class='card'><b>Anotar una factura recibida</b>"
+        "<form method='post' action='/bills/new' class='billform'>"
+        "<input name='supplier' placeholder='Proveedor' required>"
+        "<input name='total' type='number' step='0.01' placeholder='Importe total (con IVA)' required>"
+        "<input name='reference' placeholder='Su nº de factura (opcional)'>"
+        "<input name='due_date' type='date' title='Vencimiento (opcional)'>"
+        "<button class='btn-primary'>Guardar</button>"
+        "</form></div>"
+    )
+
+    cards = []
+    today = date.today().isoformat()
+    for b in unpaid:
+        due = b["due_date"] or ""
+        late = due and due < today
+        when = (f"<span class='badge'>Vencida el {due}</span>" if late
+                else f"<span class='muted'>Vence el {due}</span>" if due else "")
+        ref = f" · {html.escape(b['reference'])}" if b.get("reference") else ""
+        cards.append(
+            f"<div class='card'><div class='row'>"
+            f"<div><b>{html.escape(b['supplier_name'])}</b>{ref}<br>{when}</div>"
+            f"<div class='total'>{_money(b['total'])}</div></div>"
+            f"<div class='actions'>"
+            f"<form method='post' action='/bills/{b['id']}/paid' style='display:inline'>"
+            f"<button class='btn-primary'>Marcar pagada</button></form>"
+            f"<form method='post' action='/bills/{b['id']}/delete' style='display:inline' "
+            f"onsubmit=\"return confirm('¿Borrar esta factura de proveedor?')\">"
+            f"<button class='btn-warn'>Borrar</button></form>"
+            f"</div></div>"
+        )
+    if not cards:
+        cards.append("<div class='card'>No hay facturas de proveedor pendientes.</div>")
+
+    return _page("Pagos a proveedores", head + form + "".join(cards), user)
+
+
+@app.post("/bills/new")
+async def bills_new(request: Request):
+    user = _user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    form = await request.form()
+    try:
+        total = float(str(form.get("total", "0")).replace(",", "."))
+    except ValueError:
+        total = 0.0
+    supplier = (form.get("supplier") or "").strip()
+    if supplier and total:
+        raw_due = (form.get("due_date") or "").strip()
+        bills.create(
+            supplier, total,
+            reference=(form.get("reference") or "").strip() or None,
+            due_date=date.fromisoformat(raw_due) if raw_due else None,
+        )
+    return RedirectResponse("/bills", status_code=303)
+
+
+@app.post("/bills/{bill_id}/paid")
+async def bills_paid(request: Request, bill_id: int):
+    if not _user(request):
+        return RedirectResponse("/login", status_code=303)
+    bills.mark_paid(bill_id)
+    return RedirectResponse("/bills", status_code=303)
+
+
+@app.post("/bills/{bill_id}/delete")
+async def bills_delete(request: Request, bill_id: int):
+    if not _user(request):
+        return RedirectResponse("/login", status_code=303)
+    bills.delete(bill_id)
+    return RedirectResponse("/bills", status_code=303)
+
+
+# ── Money owed to us ─────────────────────────────────────────────────────────
+
+@app.get("/receivables", response_class=HTMLResponse)
+async def receivables_page(request: Request):
+    user = _user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+
+    unpaid = store.list_unpaid()
+    total = sum(_totals(u["invoice"])[2] for u in unpaid)
+    late = [u for u in unpaid if u["days_overdue"] > 0]
+
+    head = (
+        f"<div class='card'><div class='row'>"
+        f"<div><b>Pendiente de cobrar</b><br>"
+        f"<span class='muted'>{len(unpaid)} factura(s), {len(late)} vencida(s)</span></div>"
+        f"<div class='total'>{_money(total)}</div></div></div>"
+    )
+
+    cards = []
+    for u in unpaid:
+        inv = u["invoice"]
+        when = (f"<span class='badge'>{u['days_overdue']} día(s) de retraso</span>"
+                if u["days_overdue"] > 0
+                else f"<span class='muted'>Vence el {u['due_date']}</span>")
+        cards.append(
+            f"<div class='card'><div class='row'>"
+            f"<div><b>{html.escape(inv.invoice_number or '')}</b> — "
+            f"{html.escape(inv.client_name or '')}<br>{when}</div>"
+            f"<div class='total'>{_money(_totals(inv)[2])}</div></div>"
+            f"<div class='actions'>"
+            f"<form method='post' action='/receivables/{html.escape(inv.invoice_number)}/paid' "
+            f"style='display:inline'><button class='btn-primary'>Marcar cobrada</button></form>"
+            f"</div></div>"
+        )
+    if not cards:
+        cards.append("<div class='card'>Todo cobrado. 🎉</div>")
+
+    return _page("Cobros pendientes", head + "".join(cards), user)
+
+
+@app.post("/receivables/{number}/paid")
+async def receivables_paid(request: Request, number: str):
+    if not _user(request):
+        return RedirectResponse("/login", status_code=303)
+    store.mark_paid(number)
+    return RedirectResponse("/receivables", status_code=303)
