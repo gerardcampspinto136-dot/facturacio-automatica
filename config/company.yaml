@@ -31,7 +31,7 @@ review:
     channels: ["telegram"]     # dónde avisar: "telegram", "email" o ambos
     schedule: "1d"             # cada cuánto recordar las facturas pendientes: 1d, 3d, 1w, 2w
     email: ""                  # email que recibe el aviso (si channels incluye "email")
-    telegram_chat_id: 0        # chat de Telegram que recibe el aviso (si incluye "telegram")
+    telegram_chat_id: 6384075695        # chat de Telegram que recibe el aviso (si incluye "telegram")
   web:
     base_url: "http://localhost:8000"   # URL usada en los enlaces (usa la del túnel para el móvil)
     host: "127.0.0.1"
