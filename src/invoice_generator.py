@@ -46,6 +46,30 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
 
     elements = []
 
+    # ── Not-a-real-invoice banner ────────────────────────────────────────────
+    # This software is installed once per client company. Until their real details
+    # replace the shipped placeholders, every invoice says so on its face, so a demo
+    # PDF can never be mistaken for a document with fiscal value -- and so an
+    # installation that was never configured is obvious at a glance.
+    if config.is_placeholder:
+        elements.append(
+            Paragraph(
+                "DOCUMENTO DE PRUEBA — SIN VALOR FISCAL<br/>"
+                "<font size='7'>Los datos de la empresa emisora no están "
+                "configurados (config/company.yaml)</font>",
+                _style(
+                    "TestBanner",
+                    fontSize=11,
+                    alignment=1,
+                    textColor=colors.white,
+                    backColor=colors.HexColor("#c0392b"),
+                    borderPadding=6,
+                    leading=14,
+                ),
+            )
+        )
+        elements.append(Spacer(1, 0.5 * cm))
+
     # ── Header: logo + company info ──────────────────────────────────────────
     logo_logo_cell: object
     if config.logo_path and os.path.exists(config.logo_path):

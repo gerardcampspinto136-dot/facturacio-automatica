@@ -736,5 +736,14 @@ def run_bot() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)
 
+    # Loud on purpose: this is installed once per client company, and the failure mode
+    # is realising only after the first invoice went out that nobody filled this in.
+    if get_config().is_placeholder:
+        logger.warning(
+            "config/company.yaml still has the example company details, so every "
+            "invoice will be stamped DOCUMENTO DE PRUEBA. Fill in the client's name, "
+            "CIF, address and IBAN before going live."
+        )
+
     logger.info("Bot started, waiting for messages...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

@@ -24,6 +24,17 @@ class CompanyConfig:
         self.email = company.get("email", "")
         self.logo_path = company.get("logo_path", "config/logo.png")
 
+        # Shipped placeholders. The bot is installed once per client company, so the
+        # dangerous state is an installation that was never filled in: invoices would go
+        # out to real customers carrying a made-up CIF. Detected rather than trusted, so
+        # it can be marked on the invoice itself.
+        self.is_placeholder = (
+            self.cif.replace(" ", "").upper() in ("B00000000", "B87654321", "")
+            or "EMPRESA DE PRUEBA" in self.name.upper()
+            or "EJEMPLO" in self.name.upper()
+            or not self.name.strip()
+        )
+
         invoice = data.get("invoice", {})
         self.tax_rate = invoice.get("tax_rate", 21)
         self.currency = invoice.get("currency", "EUR")

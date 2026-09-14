@@ -1,15 +1,26 @@
 # ============================================================
-#  CONFIGURACIÓN DE EMPRESA
-#  Edita este archivo con los datos de tu empresa.
-#  Coloca el logo en config/logo.png
+#  CONFIGURACIÓN DE EMPRESA  —  UN ARCHIVO POR CLIENTE
+#
+#  Estos son los datos que cambian en cada instalación: al preparar
+#  el bot para una empresa, se rellenan aquí y no se toca nada más.
+#  Lo de abajo son DATOS DE PRUEBA, no los de ninguna empresa real.
+#
+#  Antes de entregarlo a un cliente, revisa:
+#    company.*            sus datos fiscales (salen en cada factura)
+#    invoice.tax_rate     21 general, pero hay quien factura al 10 o al 4
+#    invoice.bank_account su IBAN — va impreso en el PDF
+#    review.reviewers     quién puede aprobar facturas en la web
+#    logo                 config/logo.png
+#
+#  Mientras no estén puestos, las facturas salen marcadas como PRUEBA.
 # ============================================================
 
 company:
-  name: "TechSolucions Test S.L."
-  cif: "B87654321"
-  address: "Carrer de Provença 42, 08029 Barcelona, España"
-  phone: "+34 932 000 001"
-  email: "facturacio@techsolucions-test.com"
+  name: "EMPRESA DE PRUEBA, S.L."
+  cif: "B00000000"
+  address: "Calle de Ejemplo 1, 08001 Barcelona, España"
+  phone: "+34 900 000 000"
+  email: "pruebas@ejemplo.com"
   logo_path: "config/logo.png"   # Ruta al logo (PNG/JPG, 300x150 px recomendado)
 
 invoice:
@@ -17,7 +28,7 @@ invoice:
   currency: "EUR"
   currency_symbol: "€"
   payment_terms: "30 días"
-  bank_account: "ES91 2100 0418 4502 0005 1332"
+  bank_account: "ES00 0000 0000 0000 0000 0000"   # IBAN de prueba
   # ¿Los precios que dictas ya llevan el IVA dentro?
   #   false → "150 euros" significa 150 + IVA  = 181,50 (lo habitual entre empresas)
   #   true  → "150 euros" significa 150 con IVA dentro = 123,97 + 26,03 de IVA

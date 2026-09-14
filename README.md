@@ -33,6 +33,26 @@ amounts, logs it, and emails the client.
 
 ---
 
+## Preparing it for a client company
+
+The bot is installed once per company. Everything that differs between clients lives in
+**`config/company.yaml`** — their fiscal details, VAT rate, IBAN, who may approve
+invoices — plus their own keys in `.env`.
+
+Until those details replace the ones shipped in the repo, **every invoice is stamped
+`DOCUMENTO DE PRUEBA — SIN VALOR FISCAL`** across the top and the bot says so on
+startup. That is deliberate: an installation nobody finished configuring cannot quietly
+send a real customer an invoice carrying a made-up CIF.
+
+Checklist per client:
+
+1. `py setup_wizard.py` — writes their `.env` (Telegram token, Groq key, Google, sheet id)
+2. Fill in `config/company.yaml`: name, CIF, address, phone, email, IBAN, VAT rate
+3. `config/logo.png` — drop in their artwork, or run `py generate_logo.py` to get a
+   placeholder built from the details in step 2
+4. `review.reviewers` — the emails allowed into the web review page
+5. Issue one invoice and confirm the red PRUEBA banner is gone
+
 ## Quick start
 
 ### 1 — Install Python dependencies
