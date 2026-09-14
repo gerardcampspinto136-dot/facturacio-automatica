@@ -44,3 +44,6 @@ Thumbs.db
 # Tests
 .pytest_cache/
 
+
+# Facturas y tickets de proveedor fotografiados
+data/receipts/

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import tempfile
@@ -12,7 +13,7 @@ from telegram.ext import (
     filters,
 )
 
-from src import bills, conversation, store
+from src import bills, conversation, receipts, store
 from src.config_loader import get_config
 from src.finalize import finalize_invoice
 from src.invoice_generator import generate_invoice_pdf
@@ -33,6 +34,8 @@ _WELCOME = (
     "_«Factura para Talleres Puig, 300 euros más IVA por la reparación»_\n\n"
     "Si me falta algo obligatorio (email, NIF...) te lo pido antes de emitir nada. "
     "Cuando esté completa te la enseño y tú decides si se envía.\n\n"
+    "Para un *gasto*, mándame directamente una *foto* del ticket o de la factura "
+    "del proveedor: la leo y la anoto yo.\n\n"
     "Comandos:\n"
     "• /ayuda — cómo hablarme y ejemplos\n"
     "• /clientes — clientes que ya tengo guardados\n"
@@ -62,9 +65,16 @@ _HELP = (
     "y ya sé su email y su NIF. Si hay dos con el mismo nombre, te pregunto cuál.\n\n"
     "*Para enviarla*\n"
     "Pulsa *Enviar* o contéstame «sí, envíala». Para descartarla, «no» o /cancelar.\n\n"
+    "*Gastos: mándame una foto*\n"
+    "Haz una foto del ticket o de la factura del proveedor y mándamela. Leo el "
+    "proveedor, el número, la fecha, la base, el IVA y el total, y te lo enseño "
+    "antes de anotar nada. Si algo no se lee, te lo pregunto.\n"
+    "Puedes añadir un pie de foto para darme contexto: _«comida con cliente»_.\n"
+    "Los tickets de tarjeta o efectivo los doy por pagados; una factura con "
+    "vencimiento queda pendiente y entra en /pagos.\n\n"
     "*Otras cosas*\n"
     "`/anular 2026-0007` — factura rectificativa\n"
-    "`/gasto Ferretería Puig 242,50 F-2026/88` — anotar una factura de proveedor\n"
+    "`/gasto Ferretería Puig 242,50 F-2026/88` — anotar un gasto sin foto\n"
     "`/pagos` — cobros y pagos pendientes · `/stock` — qué reponer"
 )
 
@@ -78,11 +88,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Report this chat's id — used to configure review.notify.telegram_chat_id."""
+    """Report this chat's id — used to configure TELEGRAM_CHAT_ID."""
     await update.message.reply_text(
         f"El ID de este chat es: `{update.effective_chat.id}`\n"
-        "Cópialo en `review.notify.telegram_chat_id` de config/company.yaml "
-        "para recibir aquí los avisos de facturas pendientes.",
+        "Ponlo en el archivo `.env` como `TELEGRAM_CHAT_ID` para recibir aquí los "
+        "avisos. Va en `.env` y no en `company.yaml` porque ese se sube a GitHub.",
         parse_mode="Markdown",
     )
 
@@ -237,9 +247,76 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             os.unlink(tmp_path)
 
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A photographed supplier bill or till receipt: read it and offer to file it.
+
+    Telegram sends several sizes of a photo; the last is the largest, and receipts need
+    every pixel they can get to stay legible. An image sent as a file (Document) arrives
+    uncompressed, which is better still.
+    """
+    message = update.message
+    status_msg = await message.reply_text("Recibido. Leyendo el documento...")
+    tmp_path: str | None = None
+    try:
+        if message.photo:
+            source = message.photo[-1]
+            suffix = ".jpg"
+        else:
+            source = message.document
+            suffix = os.path.splitext(source.file_name or "")[1].lower() or ".jpg"
+
+        tg_file = await context.bot.get_file(source.file_id)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = tmp.name
+        await tg_file.download_to_drive(tmp_path)
+
+        # Reading an image is a slow blocking call, and slower still when the free tier
+        # is busy and it has to back off and retry. On the event loop that would freeze
+        # every other chat until it finished, so it goes to a worker thread.
+        receipt = await asyncio.to_thread(
+            receipts.extract_receipt, tmp_path, message.caption
+        )
+        logger.info(
+            "Receipt read: %s %s (confidence %.2f)",
+            receipt.supplier_name, receipt.total, receipt.confidence,
+        )
+
+        # Filing copies the image out of the temp file, so it must happen before the
+        # finally block deletes it -- hence the archive here rather than on confirm.
+        # A photo that holds no document at all is not worth keeping.
+        if receipt.looks_like_a_document:
+            receipt.image_path = receipts.archive_image(tmp_path, receipt)
+
+        conversation.clear(update.effective_chat.id)
+        session = receipts.session_for(update.effective_chat.id)
+        replies = session.start(receipt)
+        await status_msg.delete()
+        await _send(message, replies)
+
+    except receipts.ReceiptError as exc:
+        # Already written for the user: show it as-is, with no stack trace or backticks.
+        await status_msg.edit_text(f"⚠️ {exc}")
+    except Exception as exc:
+        logger.error("Error reading the receipt", exc_info=True)
+        await status_msg.edit_text(
+            f"Error al leer el documento:\n`{exc}`", parse_mode="Markdown"
+        )
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Text works exactly like voice: continue the dialogue, or start a new invoice."""
     text = (update.message.text or "").strip()
+
+    # A photographed expense waiting for a yes, an amount or a supplier name owns the
+    # next message; only then does a typed sentence mean "start an invoice".
+    expense = receipts.session_for(update.effective_chat.id)
+    if expense.active:
+        await _send(update.message, expense.handle_text(text))
+        return
+
     session = conversation.session_for(update.effective_chat.id)
 
     if session.active:
@@ -316,8 +393,24 @@ async def _approve(update, session) -> None:
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    session = conversation.session_for(update.effective_chat.id)
     data = query.data or ""
+
+    if data.startswith("exp:"):
+        expense = receipts.session_for(update.effective_chat.id)
+        await query.edit_message_reply_markup(reply_markup=None)
+        if not expense.active:
+            await query.message.reply_text("Ese gasto ya no está activo.")
+            return
+        action = data.split(":", 1)[1]
+        if action == "save":
+            await _send(query.message, expense.confirm())
+        elif action == "toggle_paid":
+            await _send(query.message, expense.toggle_paid())
+        elif action == "cancel":
+            await _send(query.message, expense.cancel())
+        return
+
+    session = conversation.session_for(update.effective_chat.id)
 
     if not session.active:
         await query.edit_message_reply_markup(reply_markup=None)
@@ -346,9 +439,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    expense = receipts.session_for(update.effective_chat.id)
+    if expense.active:
+        await _send(update.message, expense.cancel())
+        return
+
     session = conversation.session_for(update.effective_chat.id)
     if not session.active:
-        await update.message.reply_text("No hay ninguna factura en marcha.")
+        await update.message.reply_text("No hay ninguna factura ni ningún gasto en marcha.")
         return
     await _send(update.message, session.cancel())
 
@@ -417,6 +515,7 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("clientes", cmd_clientes))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)
 

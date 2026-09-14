@@ -4,10 +4,13 @@ A Telegram bot that turns a voice message into a complete invoice:
 
 1. Receives a voice message describing the invoice (client, services, hours, materials…)
 2. Transcribes the audio with **Groq Whisper** (free) or **OpenAI Whisper**
-3. Extracts structured data with **Claude (Anthropic)**
+3. Extracts structured data with **Groq** (free) or **Claude (Anthropic)**
 4. Generates a professional **PDF invoice** with your company branding
 5. Either sends it immediately or holds it for review (see **Review modes** below)
 6. Logs it to **Google Sheets** and emails the PDF to the client via **Gmail**
+
+It also tracks the money going the other way: photograph a supplier invoice or a till
+receipt and it is read and filed as an expense (see **Expenses** below).
 
 ## Review modes
 
@@ -53,9 +56,10 @@ copy .env.example .env
 | Variable | Where to get it |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | [@BotFather](https://t.me/BotFather) on Telegram |
+| `TELEGRAM_CHAT_ID` | Send `/chatid` to your own bot. Kept here, not in `company.yaml`, because that file is committed |
 | `GROQ_API_KEY` | [console.groq.com](https://console.groq.com/keys) — free, preferred for speech-to-text |
 | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) — optional fallback if no Groq key |
-| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) |
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) — optional; Groq alone runs the whole bot for free |
 | `GOOGLE_CREDENTIALS_PATH` | See step 4 below |
 | `SPREADSHEET_ID` | From the Google Sheets URL |
 
@@ -126,6 +130,27 @@ The bot understands Spanish, Catalan and English. Example:
 
 ---
 
+## Expenses — photograph the receipt
+
+Send the bot a **photo** of a supplier invoice or a till receipt. It reads the supplier,
+their CIF, the document number, the date, the base, the VAT and the total, shows you
+what it read, and files it as a bill only once you confirm.
+
+- Add a caption to give it context: *"comida con cliente"* sets the category and the note.
+- Card and cash tickets are filed as already paid. An invoice with a due date stays
+  pending and shows up in `/pagos` and in the weekly money digest.
+- Anything it cannot read it **asks for** rather than guessing — a wrong total is worse
+  than a question. A figure that contradicts the total is flagged, not silently fixed.
+- The photo itself is kept in `data/receipts/<year>/`, because an expense without the
+  document behind it is not deductible.
+
+`/gasto Ferretería Puig 242,50 F-2026/88` still works for typing one in without a photo.
+
+The vision model is Groq's `qwen/qwen3.8-27b` (free). Override with `GROQ_VISION_MODEL`,
+or set `ANTHROPIC_API_KEY` to use Claude instead.
+
+---
+
 ## Project structure
 
 ```
@@ -136,21 +161,32 @@ The bot understands Spanish, Catalan and English. Example:
 │   └── credentials/          # Google OAuth files (gitignored)
 ├── data/
 │   └── invoices/             # Generated PDFs (gitignored)
+├── data/
+│   ├── facturacio.db         # SQLite: invoices, contacts, products, bills
+│   └── receipts/             # Photographed supplier documents (gitignored)
 ├── src/
 │   ├── models.py             # InvoiceData and InvoiceItem dataclasses
 │   ├── config_loader.py      # Loads company.yaml
-│   ├── invoice_number.py     # Auto-incrementing invoice number
+│   ├── db.py                 # SQLite schema and per-thread connections
+│   ├── invoice_number.py     # Gap-free per-series invoice numbering
 │   ├── transcription.py      # Groq / OpenAI Whisper STT
-│   ├── parser.py             # Claude invoice data extractor
+│   ├── parser.py             # Voice → invoice data extractor
+│   ├── receipts.py           # Photo → supplier bill (vision model)
+│   ├── totals.py             # The single source of truth for VAT maths
+│   ├── checklist.py          # What an invoice needs before it can be issued
+│   ├── conversation.py       # The ask-for-what-is-missing dialogue
+│   ├── contacts.py           # Clients and suppliers
+│   ├── catalog.py            # Products, services and stock
+│   ├── bills.py              # Supplier bills and due dates
 │   ├── invoice_generator.py  # ReportLab PDF builder
 │   ├── google_auth.py        # Shared Google OAuth2 flow
 │   ├── sheets.py             # Google Sheets logger
 │   ├── email_sender.py       # Gmail sender (send_email + send_invoice_email)
-│   ├── store.py              # Pending queue + issued-invoice records (JSON)
+│   ├── store.py              # Invoice records, pending and issued
 │   ├── finalize.py           # Shared: assign number → PDF → Sheets → email → record
 │   ├── rectify.py            # Contra / rectifying invoices
-│   ├── notify.py             # Reviewer reminders (Telegram/email)
-│   ├── scheduler.py          # Batched pending-invoice reminders
+│   ├── notify.py             # Money digest and reviewer reminders
+│   ├── scheduler.py          # Batched reminders (reviews, money, stock)
 │   ├── web/app.py            # FastAPI review page (Google login)
 │   └── bot.py                # Telegram bot handlers
 ├── main.py                   # Entry point (bot + web + scheduler)
