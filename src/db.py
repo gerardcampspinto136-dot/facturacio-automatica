@@ -21,6 +21,48 @@ SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
+-- The businesses this system serves: one row per client company the software is sold
+-- to. Kept as a table rather than only config/company.yaml because accounts hang off
+-- it, and because the vendor needs to see and suspend them from the admin panel.
+CREATE TABLE IF NOT EXISTS companies (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    tax_id     TEXT,
+    contact_email TEXT,
+    status     TEXT NOT NULL DEFAULT 'active'
+               CHECK (status IN ('active', 'suspended')),
+    notes      TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Everyone who can sign in.
+--
+-- role says what kind of account it is:
+--   superadmin  the vendor. Belongs to no company (company_id IS NULL) and may create
+--               companies and their first owner.
+--   admin       the client business owner. Everything inside their own company,
+--               including creating and revoking their employees' accounts.
+--   employee    only what `permissions` grants, one key per line.
+--
+-- Emails are stored lowercased so the unique index is a real constraint: an account is
+-- the identity Google hands back at login, and two rows differing only in case would
+-- let the same person hold two different permission sets.
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY,
+    company_id    INTEGER REFERENCES companies (id) ON DELETE CASCADE,
+    email         TEXT NOT NULL UNIQUE,
+    name          TEXT,
+    role          TEXT NOT NULL DEFAULT 'employee'
+                  CHECK (role IN ('superadmin', 'admin', 'employee')),
+    permissions   TEXT NOT NULL DEFAULT '',
+    active        INTEGER NOT NULL DEFAULT 1,
+    created_by    INTEGER REFERENCES users (id) ON DELETE SET NULL,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    last_login_at TEXT,
+    CHECK ((role = 'superadmin') = (company_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_users_company ON users (company_id, active);
+
 -- Clients and suppliers share one table; `kind` separates them. A contact can be both,
 -- in which case it is stored twice: the tax details are the same but payment terms,
 -- history and balances are not.

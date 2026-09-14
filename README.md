@@ -33,6 +33,58 @@ amounts, logs it, and emails the client.
 
 ---
 
+## Accounts, roles and permissions
+
+Three kinds of account, because the people using this are not all the same person:
+
+| Role | Who | Can |
+|---|---|---|
+| **Proveedor** (superadmin) | you, the vendor | Create client companies and their first owner; suspend a company's access |
+| **Responsable** (admin) | the client's owner | Everything inside their own company, including creating and revoking their staff's accounts |
+| **Empleado** | the client's staff | Only what they have been granted, one permission at a time |
+
+Nobody hands out passwords: everyone signs in with their **Google account**, and an
+account is the email Google hands back. When someone leaves, their account is
+deactivated and they stop getting in on their next click — nothing they did is lost.
+
+**The vendor panel** (`/admin`) lists every client company with its accounts and last
+login, creates a company together with its first owner, and suspends a client without
+deleting anything — a customer who stops paying keeps their records and can be switched
+back on.
+
+**The team panel** (`/team`) is the client's own: their owner adds staff and ticks what
+each one may do, grouped as Facturas / Cobros / Proveedores / Stock / Clientes /
+Administración. New staff start read-mostly — approving and sending invoices is never
+granted by default. The navigation only shows tabs an account can actually open, and a
+refusal names the missing permission rather than showing a bare 403.
+
+Two things are deliberately impossible: **editing your own account** (which is how people
+remove their own admin rights and lock everyone out), and **removing the last active
+owner** of a company.
+
+### First run
+
+Put your own address in `SUPERADMIN_EMAILS` in `.env`. The first time you sign in with
+it, your vendor account is created automatically — otherwise the panel would be
+unreachable, since creating an account needs the panel.
+
+```
+SUPERADMIN_EMAILS=tu-email@gmail.com
+```
+
+### One company per installation, for now
+
+Accounts and permissions are per-company, but invoices, supplier bills and stock are
+**not yet** — there is one set of records in the database. That matches how the software
+is sold (one installation per client), and while a single company is active everything
+works normally.
+
+If a second company is ever made active on the same installation, the books close with
+an explanation instead of showing one client another client's data. Separating the
+records by company is the work that would turn this into true shared hosting.
+
+---
+
 ## Preparing it for a client company
 
 The bot is installed once per company. Everything that differs between clients lives in
@@ -237,7 +289,9 @@ that looks wrong can always be traced back.
 │   ├── rectify.py            # Contra / rectifying invoices
 │   ├── notify.py             # Money digest and reviewer reminders
 │   ├── scheduler.py          # Batched reminders (reviews, money, stock)
+│   ├── accounts.py           # Companies, accounts, roles and permissions
 │   ├── web/app.py            # FastAPI review page (Google login)
+│   ├── web/admin.py          # Team panel and vendor panel
 │   └── bot.py                # Telegram bot handlers
 ├── main.py                   # Entry point (bot + web + scheduler)
 ├── requirements.txt

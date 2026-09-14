@@ -1,7 +1,13 @@
 """FastAPI web app for reviewing pending invoices.
 
-Reviewers sign in with Google (email allowlisted in config.reviewers), then approve, edit,
-or reject each pending invoice, and can issue contra / rectifying invoices for issued ones.
+Everyone signs in with Google. Who they are and what they may do comes from the accounts
+table (see src/accounts.py), not from a list in a config file -- that is what lets a
+client's owner add and remove their own staff without anyone editing YAML and restarting.
+
+Every route states the one permission it needs via _guard(), so adding a route without
+deciding who may use it is a visible omission rather than an accidental hole.
+
+The account panels themselves live in src/web/admin.py.
 
 Set WEB_DEV_NO_AUTH=1 to bypass Google login for local testing.
 """
@@ -13,7 +19,7 @@ from datetime import date
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from src import bills, store
+from src import accounts, bills, store
 from src.totals import compute_totals, format_money as _fmt
 from src.config_loader import get_config
 from src.finalize import finalize_invoice
@@ -58,10 +64,108 @@ def _get_oauth():
     return _oauth
 
 
+def _current(request: Request):
+    """The account behind this request, or None.
+
+    Resolved from the database on every request rather than trusted from the cookie, so
+    revoking a permission or deactivating someone takes effect on their very next click
+    instead of whenever they happen to log out.
+    """
+    if os.getenv("WEB_DEV_NO_AUTH") == "1" and not request.session.get("user"):
+        return {"id": 0, "email": "dev@local", "name": "Desarrollo",
+                "role": accounts.SUPERADMIN, "company_id": None,
+                "permissions": [], "active": 1}
+
+    email = request.session.get("user")
+    if not email:
+        return None
+
+    found = accounts.find_by_email(email)
+    user = accounts.load_context(found["id"]) if found else None
+    if user is None or not user["active"]:
+        return None
+    # A suspended client is not "missing a permission", they have no access at all.
+    # Treating them as signed out sends them back through the login, which is where
+    # authenticate() explains, by name, that the company's access is suspended.
+    if user.get("company_status") == accounts.SUSPENDED:
+        return None
+    return user
+
+
 def _user(request: Request):
-    if os.getenv("WEB_DEV_NO_AUTH") == "1":
-        return request.session.get("user", "dev@local")
-    return request.session.get("user")
+    """Backwards-compatible display name for the header."""
+    user = _current(request)
+    return user["email"] if user else None
+
+
+# Managing accounts is safe with any number of companies; reading the books is not,
+# until invoices, bills and stock carry a company_id. See _refuse_shared_data.
+_ACCOUNT_PERMISSIONS = frozenset({"users.manage", "companies.manage"})
+
+
+def _refuse_shared_data(user):
+    """Stop a second company from being able to read the first one's books.
+
+    Accounts are per-company, but invoices, supplier bills and stock are not yet: there
+    is one set of records in the database and every query returns all of it. With a
+    single client on the installation -- which is how the software is sold -- that is
+    correct. The moment a second active company exists it would be a data leak between
+    two customers, so the books are closed to everyone until the data is separated.
+
+    Failing closed is the only safe direction here: the alternative is two clients
+    quietly reading each other's invoices, which nobody would notice from the screen.
+    """
+    active = [c for c in accounts.list_companies() if c["status"] == accounts.ACTIVE]
+    if len(active) < 2:
+        return None
+
+    names = ", ".join(html.escape(c["name"]) for c in active)
+    return _page(
+        "Pendiente de separar por empresa",
+        "<div class='card'><b>Hay más de una empresa activa en esta instalación.</b>"
+        f"<p class='muted'>Activas ahora mismo: {names}.</p>"
+        "<p>Las cuentas y los permisos ya van por empresa, pero las facturas, los "
+        "gastos y el stock todavía se guardan sin separar, así que una empresa vería "
+        "los datos de la otra. Hasta que estén separadas, esta parte queda cerrada.</p>"
+        "<p class='muted'>Para seguir: deja una sola empresa activa y suspende las "
+        "demás, o instala una copia por cliente.</p>"
+        "<div class='actions'><a class='btn btn-neutral' href='/admin'>Ver empresas</a>"
+        "</div></div>",
+        user,
+    )
+
+
+def _guard(request: Request, permission: str | None = None):
+    """Resolve the user and check one permission.
+
+    Returns (user, refusal). A route does nothing until it has checked `refusal`, which
+    is either a redirect to the login page or a page explaining what is missing -- a
+    blank 403 leaves the client's employee with nothing to tell their boss.
+    """
+    user = _current(request)
+    if user is None:
+        # Drop a cookie that no longer corresponds to usable access, so the next login
+        # starts clean and can explain itself rather than silently looping.
+        request.session.pop("user", None)
+        return None, RedirectResponse("/login", status_code=303)
+
+    if permission and permission not in _ACCOUNT_PERMISSIONS:
+        blocked = _refuse_shared_data(user)
+        if blocked is not None:
+            return user, blocked
+
+    if permission and not accounts.can(user, permission):
+        label = accounts.PERMISSIONS.get(permission, ("", permission))[1]
+        return user, _page(
+            "Sin permiso",
+            "<div class='card'><b>No tienes permiso para esta parte.</b>"
+            f"<p class='muted'>Te falta: {html.escape(label)}</p>"
+            "<p class='muted'>Si lo necesitas para tu trabajo, pídeselo a quien "
+            "administra las cuentas de tu empresa.</p>"
+            "<a class='btn btn-neutral' href='/'>Volver</a></div>",
+            user,
+        )
+    return user, None
 
 
 # ── HTML helpers ─────────────────────────────────────────────────────────────
@@ -101,14 +205,38 @@ td.num, th.num { text-align: right; }
 """
 
 
-def _page(title: str, body: str, user: str | None = None) -> HTMLResponse:
+def _page(title: str, body: str, user=None) -> HTMLResponse:
+    """Render a page. `user` may be an account dict or just an email string.
+
+    The navigation only offers what this account can actually open: showing an employee
+    a "Proveedores" tab that refuses them is a worse experience than not showing it.
+    """
     nav = ""
     if user:
+        if isinstance(user, str):
+            user = accounts.find_by_email(user) or {"email": user, "role": "", "permissions": []}
+
+        links = []
+        if accounts.can(user, "invoices.view"):
+            links.append('<a href="/">Pendientes</a><a href="/issued">Emitidas</a>')
+        if accounts.can(user, "bills.view"):
+            links.append('<a href="/bills">Proveedores</a>')
+        if accounts.can(user, "receivables.view"):
+            links.append('<a href="/receivables">Cobros</a>')
+        if accounts.can(user, "users.manage"):
+            links.append('<a href="/team">Equipo</a>')
+        if accounts.can(user, "companies.manage"):
+            links.append('<a href="/admin">Empresas</a>')
+
+        who = html.escape(user.get("name") or user.get("email", ""))
+        where = user.get("company_name")
+        if where:
+            who += f" · {html.escape(where)}"
+
         nav = (
             f'<div class="row" style="gap:14px;align-items:center">'
-            f'<a href="/">Pendientes</a><a href="/issued">Emitidas</a>'
-            f'<a href="/bills">Proveedores</a><a href="/receivables">Cobros</a>'
-            f'<span class="muted">{html.escape(user)} · <a href="/logout">salir</a></span></div>'
+            f'{"".join(links)}'
+            f'<span class="muted">{who} · <a href="/logout">salir</a></span></div>'
         )
     return HTMLResponse(
         f"<!doctype html><html lang='es'><head><meta charset='utf-8'>"
@@ -139,12 +267,22 @@ async def auth_callback(request: Request):
     token = await _get_oauth().google.authorize_access_token(request)
     info = token.get("userinfo") or {}
     email = (info.get("email") or "").lower()
-    reviewers = [r.lower() for r in get_config().reviewers]
-    if reviewers and email not in reviewers:
-        return _page("Acceso denegado",
-                     f"<div class='card'>La cuenta <b>{html.escape(email)}</b> no está autorizada "
-                     "para revisar facturas.</div>")
-    request.session["user"] = email
+
+    # Access is decided by the accounts table, not by a list in a config file: that is
+    # what lets a client's owner add and remove their own staff without an edit and a
+    # restart. `refusal` is already phrased for whoever is reading it.
+    user, refusal = accounts.authenticate(email)
+    if user is None:
+        return _page(
+            "Sin acceso",
+            f"<div class='card'>{html.escape(refusal or 'Cuenta no autorizada.')}</div>",
+        )
+
+    # Fill in a name from Google the first time, so the team list is readable.
+    if not user.get("name") and info.get("name"):
+        accounts.update_user(user["id"], name=info["name"])
+
+    request.session["user"] = user["email"]
     return RedirectResponse("/", status_code=303)
 
 
@@ -158,9 +296,9 @@ async def logout(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    user, refusal = _guard(request, "invoices.view")
+    if refusal:
+        return refusal
 
     pend = store.list_pending()
     if not pend:
@@ -192,9 +330,9 @@ async def index(request: Request):
 
 @app.get("/invoice/{token}", response_class=HTMLResponse)
 async def edit_form(request: Request, token: str):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    user, refusal = _guard(request, "invoices.create")
+    if refusal:
+        return refusal
     p = store.get_pending(token)
     if not p:
         return _page("No encontrada", "<div class='card'>Esa factura ya no está pendiente.</div>", user)
@@ -227,9 +365,9 @@ async def edit_form(request: Request, token: str):
 
 @app.post("/invoice/{token}/edit")
 async def edit_submit(request: Request, token: str):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    user, refusal = _guard(request, "invoices.create")
+    if refusal:
+        return refusal
     p = store.get_pending(token)
     if not p:
         return RedirectResponse("/", status_code=303)
@@ -267,9 +405,9 @@ async def edit_submit(request: Request, token: str):
 
 @app.get("/invoice/{token}/pdf")
 async def serve_pdf(request: Request, token: str):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    user, refusal = _guard(request, "invoices.view")
+    if refusal:
+        return refusal
     p = store.get_pending(token)
     if not p or not os.path.exists(p["draft_path"]):
         return _page("No encontrada", "<div class='card'>PDF no disponible.</div>", user)
@@ -279,9 +417,9 @@ async def serve_pdf(request: Request, token: str):
 
 @app.post("/invoice/{token}/approve")
 async def approve(request: Request, token: str):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    _user_, refusal = _guard(request, "invoices.approve")
+    if refusal:
+        return refusal
     p = store.get_pending(token)
     if not p:
         return RedirectResponse("/", status_code=303)
@@ -293,9 +431,9 @@ async def approve(request: Request, token: str):
 
 @app.post("/invoice/{token}/reject")
 async def reject(request: Request, token: str):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    _user_, refusal = _guard(request, "invoices.approve")
+    if refusal:
+        return refusal
     store.remove_pending(token)
     return RedirectResponse("/", status_code=303)
 
@@ -304,9 +442,9 @@ async def reject(request: Request, token: str):
 
 @app.get("/issued", response_class=HTMLResponse)
 async def issued(request: Request):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    user, refusal = _guard(request, "invoices.view")
+    if refusal:
+        return refusal
     records = store.list_issued()
     if not records:
         return _page("Facturas emitidas", "<div class='empty'>Aún no hay facturas emitidas.</div>", user)
@@ -337,9 +475,9 @@ async def issued(request: Request):
 
 @app.post("/invoice/{number}/rectify")
 async def rectify_route(request: Request, number: str):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    user, refusal = _guard(request, "invoices.rectify")
+    if refusal:
+        return refusal
     try:
         create_rectifying_invoice(number)
     except ValueError as exc:
@@ -351,9 +489,9 @@ async def rectify_route(request: Request, number: str):
 
 @app.get("/bills", response_class=HTMLResponse)
 async def bills_page(request: Request):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    user, refusal = _guard(request, "bills.view")
+    if refusal:
+        return refusal
 
     unpaid = bills.list_all(unpaid_only=True)
     owed = bills.total_owed()
@@ -408,9 +546,9 @@ async def bills_page(request: Request):
 
 @app.post("/bills/new")
 async def bills_new(request: Request):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    _user_, refusal = _guard(request, "bills.manage")
+    if refusal:
+        return refusal
     form = await request.form()
     try:
         total = float(str(form.get("total", "0")).replace(",", "."))
@@ -429,16 +567,18 @@ async def bills_new(request: Request):
 
 @app.post("/bills/{bill_id}/paid")
 async def bills_paid(request: Request, bill_id: int):
-    if not _user(request):
-        return RedirectResponse("/login", status_code=303)
+    _user_, refusal = _guard(request, "bills.manage")
+    if refusal:
+        return refusal
     bills.mark_paid(bill_id)
     return RedirectResponse("/bills", status_code=303)
 
 
 @app.post("/bills/{bill_id}/delete")
 async def bills_delete(request: Request, bill_id: int):
-    if not _user(request):
-        return RedirectResponse("/login", status_code=303)
+    _user_, refusal = _guard(request, "bills.manage")
+    if refusal:
+        return refusal
     bills.delete(bill_id)
     return RedirectResponse("/bills", status_code=303)
 
@@ -447,9 +587,9 @@ async def bills_delete(request: Request, bill_id: int):
 
 @app.get("/receivables", response_class=HTMLResponse)
 async def receivables_page(request: Request):
-    user = _user(request)
-    if not user:
-        return RedirectResponse("/login", status_code=303)
+    user, refusal = _guard(request, "receivables.view")
+    if refusal:
+        return refusal
 
     unpaid = store.list_unpaid()
     total = sum(_totals(u["invoice"])[2] for u in unpaid)
@@ -486,7 +626,16 @@ async def receivables_page(request: Request):
 
 @app.post("/receivables/{number}/paid")
 async def receivables_paid(request: Request, number: str):
-    if not _user(request):
-        return RedirectResponse("/login", status_code=303)
+    _user_, refusal = _guard(request, "receivables.manage")
+    if refusal:
+        return refusal
     store.mark_paid(number)
     return RedirectResponse("/receivables", status_code=303)
+
+
+# ── Account management ───────────────────────────────────────────────────────
+# The team and vendor panels live in their own module; importing it registers its
+# routes on `app`. Kept separate because managing who may do what has nothing to do
+# with reviewing invoices, and this file is long enough already.
+
+from src.web import admin as _admin  # noqa: E402,F401  (imported for its routes)
