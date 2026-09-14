@@ -221,13 +221,18 @@ class TestInvoiceStockLink:
         catalog.create("Fresa de widia 8mm", stock_qty=10, reorder_point=8)
         catalog.create("Broca HSS 5mm", stock_qty=50, reorder_point=8)
 
-        low = catalog.apply_invoice(
+        moves = catalog.apply_invoice(
             self.invoice(
                 InvoiceItem("Fresa de widia 8mm", 3, 24.5),
                 InvoiceItem("Broca HSS 5mm", 1, 3.0),
             )
         )
-        assert [p["name"] for p in low] == ["Fresa de widia 8mm"]
+        assert [m["name"] for m in moves if m["low"]] == ["Fresa de widia 8mm"]
+        # Every movement is reported, not just the ones that fell low, so the bot can
+        # tell the user what it took off.
+        assert {m["name"]: m["balance"] for m in moves} == {
+            "Fresa de widia 8mm": 7, "Broca HSS 5mm": 49,
+        }
 
     def test_rectifying_puts_the_stock_back(self):
         fresa = catalog.create("Fresa de widia 8mm", stock_qty=10)
@@ -238,3 +243,143 @@ class TestInvoiceStockLink:
 
     def test_unmatched_invoice_reports_nothing(self):
         assert catalog.apply_invoice(self.invoice(InvoiceItem("Consultoría", 1, 500.0))) == []
+
+
+class TestMatchingSpokenLines:
+    """Finding the catalog product a dictated invoice line is talking about.
+
+    The old matcher only worked when the spoken words were a substring of the catalog
+    name, which is backwards for dictation: real lines are longer and messier than the
+    product name, so stock was never deducted for anything said naturally.
+    """
+
+    def setup_products(self):
+        return {
+            "tornillos": catalog.create("Tornillos M8", stock_qty=100),
+            "taladro": catalog.create("Taladro percutor", stock_qty=5),
+            "obra": catalog.create("Mano de obra", track_stock=0),
+        }
+
+    def test_a_line_longer_than_the_product_name_still_matches(self):
+        self.setup_products()
+        for spoken in (
+            "20 tornillos M8",
+            "Tornillos inox M8 caja",
+            "3 cajas de tornillos M8",
+            "taladro percutor 750W",
+            "Taladro percutor marca Bosch",
+        ):
+            assert catalog.find_in_text(spoken) is not None, spoken
+
+    def test_accents_and_case_do_not_matter(self):
+        catalog.create("Instalación eléctrica", stock_qty=3)
+        assert catalog.find_in_text("INSTALACION ELECTRICA")["name"] == "Instalación eléctrica"
+        assert catalog.find_in_text("instalacion electrica de la nave") is not None
+
+    def test_the_most_specific_product_wins(self):
+        catalog.create("Tornillos", stock_qty=50)
+        specific = catalog.create("Tornillos M8", stock_qty=100)
+        assert catalog.find_in_text("20 tornillos M8")["id"] == specific
+        assert catalog.find_in_text("20 tornillos")["name"] == "Tornillos"
+
+    def test_two_equally_specific_products_are_refused(self):
+        catalog.create("Fresa widia 8mm")
+        catalog.create("Fresa widia 10mm")
+        assert catalog.find_in_text("Fresa widia") is None
+
+    def test_an_unrelated_line_matches_nothing(self):
+        self.setup_products()
+        assert catalog.find_in_text("Desplazamiento a taller") is None
+        assert catalog.find_in_text("") is None
+        assert catalog.find_in_text("500") is None
+
+    def test_a_partial_product_name_still_works(self):
+        # The old behaviour has to keep working: "widia" finding "Fresa de widia 8mm".
+        catalog.create("Fresa de widia 8mm", sku="FW-8")
+        assert catalog.find_in_text("widia")["sku"] == "FW-8"
+        assert catalog.find_in_text("FW-8")["sku"] == "FW-8"
+
+    def test_a_number_alone_never_identifies_a_product(self):
+        catalog.create("Broca 10mm", stock_qty=20)
+        assert catalog.find_in_text("10") is None
+
+
+class TestStockOnDictatedInvoices:
+    def invoice(self, *items):
+        return InvoiceData(
+            client_name="Talleres Mario", client_email="m@t.es",
+            items=list(items), invoice_number="2026-0001",
+        )
+
+    def test_a_naturally_dictated_line_deducts_stock(self):
+        pid = catalog.create("Tornillos M8", stock_qty=100, unit_price=0.25)
+        moves = catalog.apply_invoice(
+            self.invoice(InvoiceItem("20 tornillos M8 inoxidables", 20, 0.25))
+        )
+        assert catalog.get(pid)["stock_qty"] == 80
+        assert moves[0]["quantity"] == 20
+        assert moves[0]["balance"] == 80
+        assert moves[0]["delta"] == -20
+
+    def test_services_are_never_touched(self):
+        catalog.create("Mano de obra", track_stock=0)
+        assert catalog.apply_invoice(
+            self.invoice(InvoiceItem("3 horas de mano de obra", 3, 45.0))
+        ) == []
+
+    def test_rectifying_a_dictated_invoice_puts_the_stock_back(self):
+        pid = catalog.create("Tornillos M8", stock_qty=100)
+        sale = self.invoice(InvoiceItem("20 tornillos M8 inoxidables", 20, 0.25))
+        catalog.apply_invoice(sale)
+        back = catalog.apply_invoice(sale, ref="R-2026-0001", sign=1)
+        assert catalog.get(pid)["stock_qty"] == 100
+        assert back[0]["delta"] == 20
+
+    def test_the_movement_is_traceable_to_the_invoice(self):
+        pid = catalog.create("Tornillos M8", stock_qty=100)
+        catalog.apply_invoice(self.invoice(InvoiceItem("20 tornillos M8", 20, 0.25)))
+        entry = catalog.history(pid)[0]
+        assert entry["ref"] == "2026-0001"
+        assert entry["reason"] == catalog.SALE
+        assert entry["delta"] == -20
+
+    def test_low_stock_is_flagged_on_the_movement(self):
+        catalog.create("Tornillos M8", stock_qty=25, reorder_point=10)
+        moves = catalog.apply_invoice(self.invoice(InvoiceItem("20 tornillos M8", 20, 0.25)))
+        assert moves[0]["low"]
+        assert moves[0]["balance"] == 5
+
+    def test_selling_more_than_there_is_still_records_the_sale(self):
+        # Deliberate: a shop that sold something it had not registered is a real
+        # situation, and blocking the invoice would be worse than recording it.
+        pid = catalog.create("Tornillos M8", stock_qty=5)
+        catalog.apply_invoice(self.invoice(InvoiceItem("20 tornillos M8", 20, 0.25)))
+        assert catalog.get(pid)["stock_qty"] == -15
+
+
+class TestPluralsAndMeasurements:
+    """Dictation says "3 brocas"; the catalog says "Broca". That one letter used to
+    stop stock being deducted entirely."""
+
+    def test_a_plural_line_matches_a_singular_product(self):
+        catalog.create("Broca widia 10mm", stock_qty=30)
+        assert catalog.find_in_text("3 brocas widia de 10mm")["name"] == "Broca widia 10mm"
+
+    def test_a_singular_line_matches_a_plural_product(self):
+        catalog.create("Tornillos M8", stock_qty=100)
+        assert catalog.find_in_text("un tornillo M8")["name"] == "Tornillos M8"
+
+    def test_es_plurals_fold_too(self):
+        catalog.create("Panel solar", stock_qty=4)
+        assert catalog.find_in_text("2 paneles solares")["name"] == "Panel solar"
+
+    def test_a_measurement_said_as_two_words_still_matches(self):
+        catalog.create("Broca widia 10mm", stock_qty=30)
+        assert catalog.find_in_text("3 brocas widia 10 mm") is not None
+
+    def test_measurements_still_tell_two_sizes_apart(self):
+        catalog.create("Broca widia 10mm", stock_qty=30)
+        catalog.create("Broca widia 8mm", stock_qty=30)
+        assert catalog.find_in_text("brocas widia 8mm")["name"] == "Broca widia 8mm"
+        # Without a size there is no way to choose, so it refuses.
+        assert catalog.find_in_text("brocas widia") is None

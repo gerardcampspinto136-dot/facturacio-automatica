@@ -52,11 +52,19 @@ def finalize_invoice(invoice: InvoiceData, token: Optional[str] = None) -> str:
         except Exception:
             logger.exception("Could not email invoice %s", invoice.invoice_number)
 
-    for product in catalog.apply_invoice(invoice):
-        logger.warning(
-            "Low stock after %s: %s at %s %s (reorder point %s)",
-            invoice.invoice_number, product["name"],
-            product["stock_qty"], product["unit"], product["reorder_point"],
+    invoice.stock_movements = catalog.apply_invoice(invoice)
+    for movement in invoice.stock_movements:
+        logger.info(
+            "Stock after %s: %s %s%g -> %g %s",
+            invoice.invoice_number, movement["name"],
+            "+" if movement["delta"] > 0 else "", movement["delta"],
+            movement["balance"], movement["unit"],
         )
+        if movement["low"]:
+            logger.warning(
+                "Low stock after %s: %s at %g %s (reorder point %g)",
+                invoice.invoice_number, movement["name"],
+                movement["balance"], movement["unit"], movement["reorder_point"],
+            )
 
     return pdf_path

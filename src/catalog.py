@@ -9,6 +9,8 @@ delta and the resulting balance in stock_moves, so a level that looks wrong can 
 be traced back to the movements that produced it.
 """
 
+import re
+import unicodedata
 from typing import Optional
 
 from src import db
@@ -107,6 +109,100 @@ def find_by_name(name: str) -> Optional[dict]:
     return dict(rows[0]) if len(rows) == 1 else None
 
 
+# Words that carry no identity in a Spanish or Catalan product name, so that
+# "3 cajas de tornillos" still finds "Tornillos".
+_NOISE = {
+    "de", "del", "la", "el", "los", "las", "un", "una", "unos", "unas", "y", "e",
+    "con", "sin", "para", "por", "a", "al", "en", "d", "l", "i", "amb", "per",
+    "ud", "uds", "unidad", "unidades", "unitat", "unitats", "pack", "caja", "cajas",
+    "capsa", "capses", "hora", "horas", "hores",
+}
+
+
+def _normalize(text: str) -> str:
+    """Lowercase and strip accents, so "instalación" and "instalacion" are one word."""
+    decomposed = unicodedata.normalize("NFD", (text or "").lower())
+    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+
+
+_UNITS = {"mm", "cm", "m", "kg", "g", "l", "ml", "w", "v", "ud", "mts"}
+
+
+def _singular(word: str) -> str:
+    """Fold a Spanish or Catalan plural onto its singular, roughly but consistently.
+
+    Dictation is plural where a catalog name is singular -- "3 brocas widia" against a
+    product called "Broca widia 10mm" -- and that one letter was enough to stop stock
+    being deducted. Applied to both sides, so it only has to be self-consistent, not
+    linguistically correct.
+    """
+    if len(word) > 4 and word.endswith("es"):
+        return word[:-2]
+    if len(word) > 3 and word.endswith("s"):
+        return word[:-1]
+    return word
+
+
+def _tokens(text: str) -> list[str]:
+    """Significant words: no accents, no punctuation, no filler, no bare numbers.
+
+    A measurement said as two words is glued back together ("10 mm" -> "10mm") so it
+    matches a catalog name that writes it as one, and stays specific enough to tell a
+    10mm bit from a 8mm one.
+    """
+    words = re.findall(r"[a-z0-9]+", _normalize(text))
+
+    glued: list[str] = []
+    for word in words:
+        if glued and glued[-1].isdigit() and word in _UNITS:
+            glued[-1] += word
+        else:
+            glued.append(word)
+
+    return [_singular(w) for w in glued if w not in _NOISE and not w.isdigit()]
+
+
+def find_in_text(text: str) -> Optional[dict]:
+    """Find the catalog product that a free-text invoice line is talking about.
+
+    find_by_name() only matches when the spoken words are a substring of the catalog
+    name, which is backwards for dictation: a line reads "20 tornillos inox M8", far
+    longer than the product called "Tornillos M8". Stock was therefore never deducted
+    for anything said naturally.
+
+    So this works the other way round -- a product matches when every significant word
+    of its name appears somewhere in the line. The most specific match wins, because
+    "Tornillos M8" should beat a product simply called "Tornillos"; a tie between two
+    equally specific products is refused rather than guessed at, as elsewhere.
+    """
+    if not text or not text.strip():
+        return None
+
+    line = set(_tokens(text))
+    if not line:
+        return None
+
+    best: list[dict] = []
+    best_score = 0
+    for product in list_all():
+        name_tokens = _tokens(product["name"])
+        if product["sku"]:
+            name_tokens = name_tokens or _tokens(product["sku"])
+        if not name_tokens or not set(name_tokens) <= line:
+            continue
+        score = len(set(name_tokens))
+        if score > best_score:
+            best, best_score = [product], score
+        elif score == best_score:
+            best.append(product)
+
+    if len(best) == 1:
+        return best[0]
+    if len(best) > 1:
+        return None  # genuinely ambiguous: let a human decide
+    return find_by_name(text)
+
+
 # ── Stock ────────────────────────────────────────────────────────────────────
 
 def _apply_move(conn, product_id: int, delta: float, reason: str,
@@ -187,22 +283,35 @@ def apply_invoice(invoice, ref: Optional[str] = None, sign: int = -1) -> list[di
 
     sign=-1 for a sale (stock out), +1 to put it back when an invoice is rectified.
     Lines that do not match a product are skipped: free-text services are the normal
-    case, not an error. Returns the products that ended up at or below reorder point.
+    case, not an error.
+
+    Returns one record per movement made -- what moved, by how much, and what is left --
+    rather than only the products that fell low. The caller is the one place that can
+    tell the user "I took 3 off, 7 left", and silently deducting stock is exactly the
+    kind of thing that should be said out loud.
     """
-    touched: list[int] = []
+    movements: list[dict] = []
     for item in invoice.items:
-        product = find_by_name(item.description)
+        product = find_in_text(item.description)
         if product is None or not product["track_stock"]:
             continue
-        move(
+        quantity = abs(item.quantity)
+        balance = move(
             product["id"],
-            sign * abs(item.quantity),
+            sign * quantity,
             reason=SALE,
             ref=ref or invoice.invoice_number,
         )
-        touched.append(product["id"])
-
-    if not touched:
-        return []
-    low = {p["id"]: p for p in low_stock()}
-    return [low[pid] for pid in dict.fromkeys(touched) if pid in low]
+        reorder = product["reorder_point"]
+        movements.append({
+            "product_id": product["id"],
+            "name": product["name"],
+            "unit": product["unit"],
+            "quantity": quantity,
+            "delta": sign * quantity,
+            "balance": balance,
+            "stock_qty": balance,
+            "reorder_point": reorder,
+            "low": bool(reorder > 0 and balance <= reorder),
+        })
+    return movements

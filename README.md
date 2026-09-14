@@ -151,6 +151,36 @@ or set `ANTHROPIC_API_KEY` to use Claude instead.
 
 ---
 
+## Stock — entered once, discounted automatically
+
+Add what you sell, and the bot takes it off the shelf every time you invoice it.
+
+```
+/producto Tornillos M8 0,25 100     name, sale price, how many you have now
+/producto Mano de obra 45           no quantity → a service, no stock kept
+/entrada Tornillos M8 50            material arrived
+/salida Tornillos M8 3              broken, or used on your own job
+/inventario Tornillos M8 87         match the shelf after a count
+/stock                              what you have, short items first
+/producto                           the whole catalog
+```
+
+When an invoice line matches a catalog product the stock is moved automatically and the
+bot tells you what is left — *"📦 Tornillos M8: −20 → quedan 80 ud"* — and flags anything
+that has reached its reorder point. Cancelling an invoice with `/anular` puts the stock
+back.
+
+**You do not have to say the catalogue name exactly.** *"20 tornillos M8"*, *"3 brocas
+widia de 10mm"* and *"un tornillo M8"* all find their product: matching ignores accents,
+plurals, filler words and the order of the words, and glues *"10 mm"* back into *"10mm"*.
+Where two products are equally good candidates it deducts nothing rather than guess —
+*"brocas widia"* with both an 8mm and a 10mm on file is left alone.
+
+Every change is written to `stock_moves` with the invoice number behind it, so a level
+that looks wrong can always be traced back.
+
+---
+
 ## Project structure
 
 ```
@@ -176,7 +206,7 @@ or set `ANTHROPIC_API_KEY` to use Claude instead.
 │   ├── checklist.py          # What an invoice needs before it can be issued
 │   ├── conversation.py       # The ask-for-what-is-missing dialogue
 │   ├── contacts.py           # Clients and suppliers
-│   ├── catalog.py            # Products, services and stock
+│   ├── catalog.py            # Products, stock, and matching spoken lines to them
 │   ├── bills.py              # Supplier bills and due dates
 │   ├── invoice_generator.py  # ReportLab PDF builder
 │   ├── google_auth.py        # Shared Google OAuth2 flow

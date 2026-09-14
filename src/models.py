@@ -36,6 +36,9 @@ class InvoiceData:
     prices_normalized: bool = False
     # Link to the stored client record, when one was matched.
     contact_id: Optional[int] = None
+    # Stock moved when this invoice was issued, so the bot can report it in the chat.
+    # Filled in by finalize_invoice; not part of the invoice document itself.
+    stock_movements: list = field(default_factory=list)
 
     @property
     def subtotal(self) -> float:

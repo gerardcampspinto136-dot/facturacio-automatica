@@ -43,7 +43,8 @@ _WELCOME = (
     "• /anular <número> — emitir una rectificativa\n"
     "• /gasto <proveedor> <importe> — anotar una factura de proveedor\n"
     "• /pagos — qué debes y qué te deben\n"
-    "• /stock — productos por reponer"
+    "• /stock — qué tienes en stock (se descuenta solo al facturar)\n"
+    "• /producto — dar de alta un producto · /entrada — te ha llegado material"
 )
 
 _HELP = (
@@ -72,10 +73,20 @@ _HELP = (
     "Puedes añadir un pie de foto para darme contexto: _«comida con cliente»_.\n"
     "Los tickets de tarjeta o efectivo los doy por pagados; una factura con "
     "vencimiento queda pendiente y entra en /pagos.\n\n"
+    "*Stock*\n"
+    "`/producto Tornillos M8 0,25 100` — dar de alta un producto: nombre, precio "
+    "y cuántos tienes ahora. Sin la cantidad se crea como servicio, sin stock.\n"
+    "`/entrada Tornillos M8 50` — te ha llegado material\n"
+    "`/salida Tornillos M8 3` — se ha roto o lo has usado tú\n"
+    "`/inventario Tornillos M8 87` — cuadrar con lo que hay en la estantería\n"
+    "`/stock` — qué tienes · `/producto` — el catálogo entero\n\n"
+    "Cuando factures algo que esté en el catálogo *lo descuento solo* y te digo "
+    "cuánto queda. No hace falta que digas el nombre exacto: _«20 tornillos M8»_ "
+    "encuentra el producto igual.\n\n"
     "*Otras cosas*\n"
-    "`/anular 2026-0007` — factura rectificativa\n"
+    "`/anular 2026-0007` — factura rectificativa (devuelve el stock)\n"
     "`/gasto Ferretería Puig 242,50 F-2026/88` — anotar un gasto sin foto\n"
-    "`/pagos` — cobros y pagos pendientes · `/stock` — qué reponer"
+    "`/pagos` — cobros y pagos pendientes"
 )
 
 
@@ -147,21 +158,211 @@ async def cmd_pagos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def _trailing_numbers(args: list[str], how_many: int):
+    """Split "Tornillos inox M8 0,25 100" into ("Tornillos inox M8", [0.25, 100.0]).
+
+    The numbers are taken from the end so a product name can contain spaces and even
+    digits ("Broca 10mm") without needing quotes -- the same trick /gasto uses, because
+    typing quotation marks on a phone is nobody's idea of a good time.
+    """
+    numbers: list[float] = []
+    index = len(args)
+    while index > 0 and len(numbers) < how_many:
+        candidate = args[index - 1].replace("€", "").replace(",", ".")
+        try:
+            numbers.insert(0, float(candidate))
+        except ValueError:
+            break
+        index -= 1
+    return " ".join(args[:index]).strip(), numbers
+
+
+def _stock_line(product: dict) -> str:
+    mark = "⚠️" if (product["reorder_point"] > 0
+                    and product["stock_qty"] <= product["reorder_point"]) else "•"
+    line = f"  {mark} {product['name']}: {product['stock_qty']:g} {product['unit']}"
+    if product["reorder_point"] > 0:
+        line += f" (pedir a {product['reorder_point']:g})"
+    return line
+
+
 async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List products that have reached their reorder point."""
+    """Show what is in stock, with anything at its reorder point flagged first."""
     from src import catalog
 
-    low = catalog.low_stock()
-    if not low:
-        await update.message.reply_text("Todo el stock está por encima del punto de pedido. 👍")
-        return
-    lines = ["📦 Stock bajo:"]
-    for p in low[:20]:
-        lines.append(
-            f"  • {p['name']}: quedan {p['stock_qty']:g} {p['unit']} "
-            f"(punto de pedido {p['reorder_point']:g})"
+    tracked = [p for p in catalog.list_all() if p["track_stock"]]
+    if not tracked:
+        await update.message.reply_text(
+            "Todavía no tienes productos con stock.\n\n"
+            "Añade uno así:\n"
+            "`/producto Tornillos M8 0,25 100`\n"
+            "(nombre, precio de venta y cuántos tienes ahora)",
+            parse_mode="Markdown",
         )
-    await update.message.reply_text("\n".join(lines))
+        return
+
+    low = [p for p in tracked
+           if p["reorder_point"] > 0 and p["stock_qty"] <= p["reorder_point"]]
+    rest = [p for p in tracked if p not in low]
+
+    lines = []
+    if low:
+        lines.append("⚠️ *Por reponer*")
+        lines.extend(_stock_line(p) for p in low)
+        lines.append("")
+    lines.append(f"📦 *Stock* ({len(tracked)} productos)")
+    lines.extend(_stock_line(p) for p in rest[:40])
+    if len(rest) > 40:
+        lines.append(f"  … y {len(rest) - 40} más")
+    # Value is at cost, and cost is only known if it was entered. Printing "0,00 €"
+    # over a full shelf reads like a bug, so the line is simply left out.
+    value = catalog.stock_value()
+    if value:
+        lines.append(f"\nValor del stock (a coste): "
+                     f"{format_money(value, get_config())}")
+    lines.append("\n`/entrada <producto> <cantidad>` cuando te llegue material")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_producto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Add a product, or list the catalog: /producto <nombre> <precio> [stock inicial]"""
+    from src import catalog
+
+    args = list(context.args or [])
+    if not args:
+        products = catalog.list_all()
+        if not products:
+            await update.message.reply_text(
+                "No tienes ningún producto todavía.\n\n"
+                "Añade uno así:\n`/producto Tornillos M8 0,25 100`\n"
+                "→ nombre, precio de venta, y cuántos tienes ahora (opcional).",
+                parse_mode="Markdown",
+            )
+            return
+        config = get_config()
+        lines = [f"*Catálogo ({len(products)})*", ""]
+        for p in products[:40]:
+            stock = (f" — {p['stock_qty']:g} {p['unit']}" if p["track_stock"]
+                     else " — servicio")
+            lines.append(f"• {p['name']}: {format_money(p['unit_price'], config)}{stock}")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return
+
+    name, numbers = _trailing_numbers(args, 2)
+    if not name or not numbers:
+        await update.message.reply_text(
+            "Uso: `/producto <nombre> <precio> [stock inicial]`\n"
+            "Ejemplo: `/producto Tornillos M8 0,25 100`\n\n"
+            "Para un servicio sin stock: `/producto Mano de obra 45`",
+            parse_mode="Markdown",
+        )
+        return
+
+    # One number is the price; two are price then opening stock.
+    price = numbers[0]
+    opening = numbers[1] if len(numbers) > 1 else 0.0
+
+    if catalog.find_by_name(name):
+        await update.message.reply_text(
+            f"Ya tienes un producto llamado *{name}*. "
+            f"Para añadirle stock usa `/entrada {name} <cantidad>`.",
+            parse_mode="Markdown",
+        )
+        return
+
+    product_id = catalog.create(
+        name, unit_price=price, stock_qty=opening,
+        track_stock=1 if len(numbers) > 1 else 0,
+    )
+    product = catalog.get(product_id)
+    config = get_config()
+
+    if product["track_stock"]:
+        body = (f"✅ Producto creado: *{product['name']}*\n"
+                f"Precio: {format_money(product['unit_price'], config)}\n"
+                f"Stock inicial: {product['stock_qty']:g} {product['unit']}\n\n"
+                f"Lo descontaré solo cuando lo factures.")
+    else:
+        body = (f"✅ Servicio creado: *{product['name']}*\n"
+                f"Precio: {format_money(product['unit_price'], config)}\n\n"
+                f"Sin control de stock. Si querías llevar stock, dime también "
+                f"cuántos tienes: `/producto {product['name']} "
+                f"{product['unit_price']:g} 100`")
+    await update.message.reply_text(body, parse_mode="Markdown")
+
+
+async def _adjust_stock(update, context, sign: int, verb: str) -> None:
+    """Shared body of /entrada and /salida: <producto> <cantidad>."""
+    from src import catalog
+
+    name, numbers = _trailing_numbers(list(context.args or []), 1)
+    if not name or not numbers:
+        await update.message.reply_text(
+            f"Uso: `/{verb} <producto> <cantidad>`\n"
+            f"Ejemplo: `/{verb} Tornillos M8 50`",
+            parse_mode="Markdown",
+        )
+        return
+
+    product = catalog.find_in_text(name)
+    if product is None:
+        await update.message.reply_text(
+            f"No encuentro ningún producto que se llame «{name}». "
+            "Mira `/producto` para ver los que tienes, o créalo con "
+            f"`/producto {name} <precio> <cantidad>`.",
+            parse_mode="Markdown",
+        )
+        return
+
+    quantity = abs(numbers[0])
+    balance = catalog.move(
+        product["id"], sign * quantity,
+        reason=catalog.PURCHASE if sign > 0 else catalog.ADJUSTMENT,
+    )
+    arrow = "➕" if sign > 0 else "➖"
+    text = (f"{arrow} *{product['name']}*: {'+' if sign > 0 else '−'}{quantity:g}\n"
+            f"Quedan *{balance:g} {product['unit']}*.")
+    if product["reorder_point"] > 0 and balance <= product["reorder_point"]:
+        text += f"\n⚠️ Estás en el punto de pedido ({product['reorder_point']:g})."
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def cmd_entrada(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive stock: /entrada <producto> <cantidad>"""
+    await _adjust_stock(update, context, +1, "entrada")
+
+
+async def cmd_salida(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Take stock out by hand (breakage, own use): /salida <producto> <cantidad>"""
+    await _adjust_stock(update, context, -1, "salida")
+
+
+async def cmd_inventario(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set a counted level: /inventario <producto> <cantidad contada>"""
+    from src import catalog
+
+    name, numbers = _trailing_numbers(list(context.args or []), 1)
+    if not name or not numbers:
+        await update.message.reply_text(
+            "Uso: `/inventario <producto> <cantidad contada>`\n"
+            "Ejemplo: `/inventario Tornillos M8 87`\n"
+            "Sirve para cuadrar el stock con lo que hay de verdad en la estantería.",
+            parse_mode="Markdown",
+        )
+        return
+
+    product = catalog.find_in_text(name)
+    if product is None:
+        await update.message.reply_text(f"No encuentro «{name}» en tus productos.")
+        return
+
+    before = product["stock_qty"]
+    balance = catalog.set_level(product["id"], numbers[0])
+    difference = round(balance - before, 4)
+    text = (f"📋 *{product['name']}*: {before:g} → *{balance:g} {product['unit']}*\n"
+            f"Diferencia: {difference:+g}")
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -368,6 +569,17 @@ async def _approve(update, session) -> None:
         else:
             sent = "⚠️ No enviada: falta el email del cliente"
 
+        # Stock moving without a word was the old behaviour: it only ever reached the
+        # log file, so a level could drift for weeks before anyone noticed.
+        stock_note = ""
+        for movement in getattr(invoice, "stock_movements", []):
+            stock_note += (
+                f"\n📦 {movement['name']}: −{movement['quantity']:g} → "
+                f"quedan {movement['balance']:g} {movement['unit']}"
+            )
+            if movement["low"]:
+                stock_note += " ⚠️ por reponer"
+
         with open(pdf_path, "rb") as pdf_file:
             await message.reply_document(
                 document=pdf_file,
@@ -376,7 +588,7 @@ async def _approve(update, session) -> None:
                     f"✅ Factura *{invoice.invoice_number}*\n"
                     f"Cliente: {invoice.client_name}\n"
                     f"Total: {format_money(total, config)}\n"
-                    f"{sent}{saved_note}"
+                    f"{sent}{stock_note}{saved_note}"
                 ),
                 parse_mode="Markdown",
             )
@@ -511,6 +723,11 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("gasto", cmd_gasto))
     app.add_handler(CommandHandler("pagos", cmd_pagos))
     app.add_handler(CommandHandler("stock", cmd_stock))
+    app.add_handler(CommandHandler("producto", cmd_producto))
+    app.add_handler(CommandHandler("productos", cmd_producto))
+    app.add_handler(CommandHandler("entrada", cmd_entrada))
+    app.add_handler(CommandHandler("salida", cmd_salida))
+    app.add_handler(CommandHandler("inventario", cmd_inventario))
     app.add_handler(CommandHandler("cancelar", cmd_cancelar))
     app.add_handler(CommandHandler("clientes", cmd_clientes))
     app.add_handler(CallbackQueryHandler(on_button))
