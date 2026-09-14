@@ -3,6 +3,14 @@ import os
 from pathlib import Path
 
 
+def _int(value) -> int:
+    """A chat id that is blank, commented out or mistyped means "not configured"."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
 class CompanyConfig:
     def __init__(self, config_path: str = "config/company.yaml"):
         with open(config_path, "r", encoding="utf-8") as f:
@@ -49,7 +57,11 @@ class CompanyConfig:
         self.notify_channels = notify.get("channels", ["telegram"]) or []
         self.notify_schedule = str(notify.get("schedule", "1d"))
         self.notify_email = notify.get("email", "")
-        self.notify_telegram_chat_id = notify.get("telegram_chat_id", 0)
+        # The chat id identifies a personal Telegram account, and company.yaml is
+        # committed, so .env wins over the file and the file can be left empty.
+        self.notify_telegram_chat_id = _int(
+            os.getenv("TELEGRAM_CHAT_ID") or notify.get("telegram_chat_id", 0)
+        )
 
         # ── Money and stock alerts ───────────────────────────────────────────
         alerts = data.get("alerts", {}) or {}
