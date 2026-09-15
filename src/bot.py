@@ -709,10 +709,43 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.exception("Could not even report the error to the user")
 
 
+def _bot_token() -> str | None:
+    """Which Telegram bot to run as.
+
+    Each client company has its own bot, with its own name and its own token, entered
+    in the admin panel -- that is what makes "connect this client's bot" a form rather
+    than an edit to a file on their machine. TELEGRAM_BOT_TOKEN in .env still wins when
+    it is set, so an existing installation keeps working untouched.
+
+    Only the active company's bot runs here: one process serves one company, which is
+    how the software is installed. Running every client's bot from a single process
+    needs the records separated by company first.
+    """
+    from_env = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    if from_env:
+        return from_env
+
+    try:
+        from src import accounts
+
+        company = accounts.active_company()
+        if company:
+            token = (company.get("telegram_bot_token") or "").strip()
+            if token:
+                logger.info("Using the Telegram bot configured for %s", company["name"])
+                return token
+    except Exception:
+        logger.debug("Could not read the company's bot token", exc_info=True)
+    return None
+
+
 def run_bot() -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    token = _bot_token()
     if not token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is not set in .env")
+        raise RuntimeError(
+            "No hay ningún bot configurado. Pon el token en el panel de administración "
+            "(Empresas → Configurar empresa y su bot) o en TELEGRAM_BOT_TOKEN en .env."
+        )
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))

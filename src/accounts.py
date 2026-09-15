@@ -140,6 +140,79 @@ def list_companies(include_suspended: bool = True) -> list[dict]:
     return [dict(r) for r in db.connect().execute(sql).fetchall()]
 
 
+# What the admin panel can set on a client company. Everything an invoice needs to be
+# legally complete, plus the client's own Telegram bot, so preparing a client is one
+# form rather than a hand-edited YAML file on their machine.
+SETTINGS_FIELDS = (
+    "name", "tax_id", "address", "phone", "invoice_email", "iban",
+    "tax_rate", "payment_terms", "prices_include_tax", "invoice_series",
+    "review_mode", "telegram_bot_token", "telegram_chat_id", "logo_path",
+    "contact_email", "notes",
+)
+
+# Without these an invoice is not a valid Spanish invoice, so they gate "configured".
+REQUIRED_SETTINGS = ("name", "tax_id", "address")
+
+
+def update_company(company_id: int, **fields) -> None:
+    """Change a client's settings. Unknown keys are ignored, blanks clear a field."""
+    changes = {k: v for k, v in fields.items() if k in SETTINGS_FIELDS}
+    if "name" in changes:
+        if not (changes["name"] or "").strip():
+            raise ValueError("La empresa necesita un nombre")
+        changes["name"] = changes["name"].strip()
+    for key in ("tax_id", "address", "phone", "iban", "payment_terms",
+                "invoice_series", "review_mode", "telegram_bot_token",
+                "telegram_chat_id", "logo_path", "notes"):
+        if key in changes and isinstance(changes[key], str):
+            changes[key] = changes[key].strip() or None
+    for key in ("invoice_email", "contact_email"):
+        if key in changes:
+            changes[key] = normalize_email(changes[key]) or None
+    if not changes:
+        return
+
+    assignments = ", ".join(f"{k} = ?" for k in changes)
+    with db.transaction() as conn:
+        cur = conn.execute(
+            f"UPDATE companies SET {assignments} WHERE id = ?",
+            (*changes.values(), company_id),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(f"Company {company_id} not found")
+        # Stamped once the fiscal details are all present, so the panel can show at a
+        # glance which clients are ready to invoice and which are half set up.
+        row = conn.execute(
+            "SELECT name, tax_id, address FROM companies WHERE id = ?", (company_id,)
+        ).fetchone()
+        if all((row[f] or "").strip() for f in REQUIRED_SETTINGS):
+            conn.execute(
+                "UPDATE companies SET configured_at = COALESCE(configured_at, "
+                "datetime('now')) WHERE id = ?", (company_id,)
+            )
+        else:
+            conn.execute(
+                "UPDATE companies SET configured_at = NULL WHERE id = ?", (company_id,)
+            )
+
+
+def missing_settings(company: dict) -> list[str]:
+    """Which required fiscal details are still blank, in words the panel can show."""
+    labels = {"name": "nombre", "tax_id": "CIF", "address": "dirección"}
+    return [labels[f] for f in REQUIRED_SETTINGS if not (company.get(f) or "").strip()]
+
+
+def active_company() -> Optional[dict]:
+    """The single company this installation serves, if there is exactly one.
+
+    Settings are read through this: with one active client -- how the software is sold
+    -- the panel drives the invoices. With none or several it returns None and the
+    config file stays in charge, which is what keeps two clients from sharing settings.
+    """
+    active = [c for c in list_companies() if c["status"] == ACTIVE]
+    return active[0] if len(active) == 1 else None
+
+
 def set_company_status(company_id: int, status: str) -> None:
     """Suspend or reactivate a client.
 

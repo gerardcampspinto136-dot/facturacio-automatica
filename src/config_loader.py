@@ -1,5 +1,7 @@
-import yaml
+import logging
 import os
+
+import yaml
 from pathlib import Path
 
 
@@ -28,12 +30,8 @@ class CompanyConfig:
         # dangerous state is an installation that was never filled in: invoices would go
         # out to real customers carrying a made-up CIF. Detected rather than trusted, so
         # it can be marked on the invoice itself.
-        self.is_placeholder = (
-            self.cif.replace(" ", "").upper() in ("B00000000", "B87654321", "")
-            or "EMPRESA DE PRUEBA" in self.name.upper()
-            or "EJEMPLO" in self.name.upper()
-            or not self.name.strip()
-        )
+        self.company_id = None
+        self.is_placeholder = self._looks_like_placeholder()
 
         invoice = data.get("invoice", {})
         self.tax_rate = invoice.get("tax_rate", 21)
@@ -87,11 +85,82 @@ class CompanyConfig:
         self.web_port = int(web.get("port", 8000))
 
 
+    # ── Settings entered in the admin panel ──────────────────────────────────
+
+    def apply_company(self, company: dict) -> "CompanyConfig":
+        """Overlay a client's settings from the database onto the file defaults.
+
+        The YAML stays as the shipped default; anything filled in for the company in
+        the admin panel wins. That is what makes the panel real rather than a form that
+        writes to a table nobody reads -- and it means preparing a client never requires
+        editing a file on their machine.
+
+        Only non-empty values override, so a half-filled company still produces a
+        working invoice using the defaults for whatever is missing.
+        """
+        def take(key, attr=None, cast=None):
+            value = company.get(key)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                return
+            setattr(self, attr or key, cast(value) if cast else value)
+
+        take("name")
+        take("tax_id", "cif")
+        take("address")
+        take("phone")
+        take("invoice_email", "email")
+        take("iban", "bank_account")
+        take("tax_rate", cast=float)
+        take("payment_terms")
+        take("logo_path")
+        take("review_mode")
+        take("telegram_chat_id", "notify_telegram_chat_id", cast=_int)
+        if company.get("prices_include_tax") is not None:
+            self.prices_include_tax = bool(company["prices_include_tax"])
+
+        self.company_id = company.get("id")
+        self.is_placeholder = self._looks_like_placeholder()
+        return self
+
+    def _looks_like_placeholder(self) -> bool:
+        return (
+            self.cif.replace(" ", "").upper() in ("B00000000", "B87654321", "")
+            or "EMPRESA DE PRUEBA" in self.name.upper()
+            or "EJEMPLO" in self.name.upper()
+            or not self.name.strip()
+        )
+
+
 _config: CompanyConfig | None = None
 
 
 def get_config() -> CompanyConfig:
+    """The settings in force right now.
+
+    Built from config/company.yaml, then overlaid with the active client's settings from
+    the admin panel when there is exactly one active company. The database lookup is
+    deliberately forgiving: this is called from the PDF builder and the bot, and a
+    missing or half-migrated database must not stop an invoice being produced.
+    """
     global _config
     if _config is None:
-        _config = CompanyConfig()
+        config = CompanyConfig()
+        try:
+            from src import accounts
+
+            company = accounts.active_company()
+            if company:
+                config.apply_company(company)
+        except Exception:  # pragma: no cover - defensive
+            logging.getLogger(__name__).debug(
+                "No company settings available; using config/company.yaml", exc_info=True
+            )
+        _config = config
     return _config
+
+
+def reload_config() -> CompanyConfig:
+    """Forget the cached settings, so a change in the panel takes effect."""
+    global _config
+    _config = None
+    return get_config()

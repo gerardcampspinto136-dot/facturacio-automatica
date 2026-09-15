@@ -216,6 +216,24 @@ _ADDED_COLUMNS = {
     "invoices": [
         ("prices_include_tax", "INTEGER"),
     ],
+    # Everything the admin panel needs to set up a client without editing YAML. Added
+    # here rather than in CREATE TABLE so an installation that already has companies
+    # gains the columns on its next start.
+    "companies": [
+        ("address", "TEXT"),
+        ("phone", "TEXT"),
+        ("invoice_email", "TEXT"),
+        ("iban", "TEXT"),
+        ("tax_rate", "REAL"),
+        ("payment_terms", "TEXT"),
+        ("prices_include_tax", "INTEGER"),
+        ("invoice_series", "TEXT"),
+        ("review_mode", "TEXT"),
+        ("telegram_bot_token", "TEXT"),
+        ("telegram_chat_id", "TEXT"),
+        ("logo_path", "TEXT"),
+        ("configured_at", "TEXT"),
+    ],
 }
 
 

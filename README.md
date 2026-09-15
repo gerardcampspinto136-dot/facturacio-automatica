@@ -83,6 +83,36 @@ If a second company is ever made active on the same installation, the books clos
 an explanation instead of showing one client another client's data. Separating the
 records by company is the work that would turn this into true shared hosting.
 
+### Setting a client up from the panel
+
+`/admin` → **⚙️ Configurar empresa y su bot** holds everything needed to put a client
+live, so preparing one never means editing a file on their machine:
+
+- **Datos fiscales** — name, CIF, address, phone, invoicing email, IBAN. These print on
+  every invoice, and until name + CIF + address are all present the company is listed as
+  *sin configurar* and its invoices carry the `DOCUMENTO DE PRUEBA` banner.
+- **Facturación** — default VAT rate, payment terms, numbering series, whether dictated
+  prices include VAT, and whether invoices wait for approval or send immediately.
+- **Su bot de Telegram** — each client has their **own** bot with their own name. Create
+  it in Telegram with `@BotFather` (`/newbot`), paste the token here, and that company is
+  connected to that bot. The company list shows `bot ✓` once it is.
+- **Marca** — logo path, internal contact email and notes.
+
+Saving takes effect immediately; nothing needs restarting. Settings entered here override
+`config/company.yaml`, which stays as the shipped default for anything left blank.
+
+### Where things are
+
+| | URL |
+|---|---|
+| What the client's staff see | `http://localhost:8000/` |
+| The client owner's team panel | `http://localhost:8000/team` |
+| Your vendor panel | `http://localhost:8000/admin` |
+
+These run on the machine the bot runs on. To let a client reach it from their own office
+or phone, it has to be deployed somewhere with a real domain (or exposed through a tunnel
+for testing), and `review.web.base_url` updated to match.
+
 ---
 
 ## Preparing it for a client company

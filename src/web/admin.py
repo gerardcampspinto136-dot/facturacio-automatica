@@ -256,6 +256,16 @@ def _company_card(company: dict) -> str:
                "<div class='muted'>⚠️ No tiene ningún responsable activo: nadie de "
                "esta empresa puede dar de alta a su equipo.</div>")
 
+    missing = accounts.missing_settings(company)
+    if missing:
+        warning += (f"<div class='muted'>⚠️ Sin configurar: falta "
+                    f"{html.escape(', '.join(missing))}. Sus facturas saldrían "
+                    f"marcadas como prueba.</div>")
+    if not (company.get("telegram_bot_token") or "").strip():
+        warning += ("<div class='muted'>⚠️ Sin bot de Telegram conectado.</div>")
+    else:
+        badge += " <span class='badge' style='background:#2f855a;color:#fff'>bot ✓</span>"
+
     rows = "".join(
         f"<tr><td>{html.escape(m['name'] or '—')}</td>"
         f"<td>{html.escape(m['email'])}</td>"
@@ -272,6 +282,9 @@ def _company_card(company: dict) -> str:
         f"</div>"
         f"<table><tr><th>Nombre</th><th>Email</th><th>Rol</th>"
         f"<th class='num'>Último acceso</th></tr>{rows}</table>"
+        f"<div class='actions'>"
+        f"<a class='btn btn-neutral' href='/admin/{company['id']}/settings'>"
+        f"⚙️ Configurar empresa y su bot</a></div>"
         f"<form method='post' action='/admin/{company['id']}/owner' class='billform'>"
         f"<input name='email' type='email' placeholder='email del responsable' required>"
         f"<input name='name' placeholder='nombre'>"
@@ -363,6 +376,132 @@ async def admin_add_owner(request: Request, company_id: int):
     except Exception:
         return _error(user, "No se pudo añadir",
                       "Ese email ya tiene una cuenta en el sistema.", "/admin")
+    return RedirectResponse("/admin", status_code=303)
+
+
+def _field(label: str, name: str, value, hint: str = "", kind: str = "text") -> str:
+    note = f"<span class='muted'> — {html.escape(hint)}</span>" if hint else ""
+    return (f"<label>{html.escape(label)}{note}</label>"
+            f"<input name='{name}' type='{kind}' "
+            f"value='{html.escape(str(value or ''))}'>")
+
+
+@app.get("/admin/{company_id}/settings", response_class=HTMLResponse)
+async def company_settings(request: Request, company_id: int):
+    """Everything needed to put a client live, on one page."""
+    user, refusal = _guard(request, "companies.manage")
+    if refusal:
+        return refusal
+
+    company = accounts.get_company(company_id)
+    if company is None:
+        return _error(user, "No encontrada", "Esa empresa ya no existe.", "/admin")
+
+    missing = accounts.missing_settings(company)
+    banner = (
+        f"<div class='card' style='border-color:#c53030'>"
+        f"<b>Faltan datos obligatorios: {html.escape(', '.join(missing))}.</b>"
+        f"<p class='muted'>Hasta que estén, sus facturas salen marcadas como "
+        f"DOCUMENTO DE PRUEBA.</p></div>" if missing else
+        "<div class='card' style='border-color:#2f855a'>"
+        "<b>✅ Lista para facturar.</b></div>"
+    )
+
+    inclusive = bool(company.get("prices_include_tax"))
+    manual = (company.get("review_mode") or "manual") == "manual"
+
+    body = (
+        banner +
+        f"<form method='post' action='/admin/{company_id}/settings'>"
+
+        "<div class='card'><b>Datos fiscales</b>"
+        "<p class='muted'>Salen impresos en cada factura que emita esta empresa.</p>"
+        + _field("Nombre fiscal", "name", company["name"])
+        + _field("CIF / NIF", "tax_id", company["tax_id"], "B12345678")
+        + _field("Dirección", "address", company.get("address"))
+        + _field("Teléfono", "phone", company.get("phone"))
+        + _field("Email desde el que factura", "invoice_email",
+                 company.get("invoice_email"), "aparece en la factura", "email")
+        + _field("IBAN", "iban", company.get("iban"), "para que le paguen")
+        + "</div>"
+
+        "<div class='card'><b>Facturación</b>"
+        + _field("IVA por defecto (%)", "tax_rate", company.get("tax_rate") or 21,
+                 "21, 10 o 4", "number")
+        + _field("Forma de pago", "payment_terms",
+                 company.get("payment_terms") or "30 días")
+        + _field("Serie de numeración", "invoice_series",
+                 company.get("invoice_series"), "en blanco = sin serie")
+        + "<label>¿Los precios que dictan ya llevan el IVA dentro?</label>"
+        + "<select name='prices_include_tax' style='width:100%;padding:8px'>"
+        + f"<option value='0'{'' if inclusive else ' selected'}>No — el IVA se suma aparte</option>"
+        + f"<option value='1'{' selected' if inclusive else ''}>Sí — el precio ya lleva IVA</option>"
+        + "</select>"
+        + "<label>¿Las facturas se revisan antes de enviarse?</label>"
+        + "<select name='review_mode' style='width:100%;padding:8px'>"
+        + f"<option value='manual'{' selected' if manual else ''}>Sí — quedan pendientes de aprobar</option>"
+        + f"<option value='auto'{'' if manual else ' selected'}>No — se envían al momento</option>"
+        + "</select>"
+        + "</div>"
+
+        "<div class='card'><b>Su bot de Telegram</b>"
+        "<p class='muted'>Cada empresa tiene su propio bot, con su propio nombre. "
+        "Se crea en Telegram hablando con <b>@BotFather</b> (/newbot) y él da el token. "
+        "Pégalo aquí y esta empresa queda conectada a su bot.</p>"
+        + _field("Token del bot", "telegram_bot_token",
+                 company.get("telegram_bot_token"), "1234567890:AA...")
+        + _field("Chat de avisos", "telegram_chat_id",
+                 company.get("telegram_chat_id"),
+                 "el /chatid que dice el bot")
+        + "</div>"
+
+        "<div class='card'><b>Marca</b>"
+        + _field("Ruta del logo", "logo_path",
+                 company.get("logo_path") or "config/logo.png")
+        + _field("Email de contacto (para ti)", "contact_email",
+                 company.get("contact_email"), "no sale en la factura", "email")
+        + "<label>Notas internas</label>"
+        + f"<textarea name='notes' rows='2'>{html.escape(company.get('notes') or '')}</textarea>"
+        + "</div>"
+
+        "<div class='actions'><button class='btn-primary'>Guardar</button>"
+        "<a class='btn btn-neutral' href='/admin'>Volver</a></div></form>"
+    )
+    return _page(f"Configurar {company['name']}", body, user)
+
+
+@app.post("/admin/{company_id}/settings")
+async def company_settings_save(request: Request, company_id: int):
+    user, refusal = _guard(request, "companies.manage")
+    if refusal:
+        return refusal
+    if accounts.get_company(company_id) is None:
+        return _error(user, "No encontrada", "Esa empresa ya no existe.", "/admin")
+
+    form = await request.form()
+    values = {key: form.get(key) for key in accounts.SETTINGS_FIELDS
+              if form.get(key) is not None}
+
+    try:
+        values["tax_rate"] = float(str(values.get("tax_rate", "21")).replace(",", "."))
+    except ValueError:
+        values.pop("tax_rate", None)
+    values["prices_include_tax"] = 1 if form.get("prices_include_tax") == "1" else 0
+    if values.get("review_mode") not in ("manual", "auto"):
+        values.pop("review_mode", None)
+
+    try:
+        accounts.update_company(company_id, **values)
+    except ValueError as exc:
+        return _error(user, "No se pudo guardar", str(exc),
+                      f"/admin/{company_id}/settings")
+
+    # The settings are cached for the whole process, so a change here would otherwise
+    # only show up after a restart -- and the person who just saved would think it
+    # had not worked.
+    from src.config_loader import reload_config
+
+    reload_config()
     return RedirectResponse("/admin", status_code=303)
 
 
