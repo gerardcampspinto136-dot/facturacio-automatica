@@ -33,6 +33,28 @@ amounts, logs it, and emails the client.
 
 ---
 
+## Checking it all works
+
+```
+py verificar.py          # everything, including Telegram / Groq / Google
+py verificar.py --rapido # skips anything that needs internet
+```
+
+Or double-click **`Comprobar que todo funciona.bat`**. It exercises the real thing —
+VAT both ways, gap-free numbering, stock deducted from a dictated invoice line, supplier
+bills, receipt arithmetic, a generated PDF, and that every web page demands a login —
+on a throwaway database, so it never touches real data. Each failure says what to do.
+
+## Running it
+
+| | |
+|---|---|
+| **`Iniciar bot.bat`** | the Telegram bot + the web app + reminders |
+| **`Panel de administracion.bat`** | just the web panel, and opens it in the browser |
+| **`Comprobar que todo funciona.bat`** | the checks above |
+
+---
+
 ## Accounts, roles and permissions
 
 Three kinds of account, because the people using this are not all the same person:

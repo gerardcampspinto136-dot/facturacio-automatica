@@ -339,3 +339,36 @@ class TestDataIsolationGuard:
         accounts.create_company("Otra Empresa S.L.")
         _seed_session(client, vendor)
         assert "más de una empresa activa" in client.get("/").text
+
+
+class TestDevBypassIsLocalOnly:
+    """WEB_DEV_NO_AUTH opens the panel with no login. It must never do so remotely.
+
+    The flag is convenient while preparing a client and catastrophic if it survives to
+    a public address, so it is tied to the caller's address rather than trusted.
+    """
+
+    def test_a_local_request_is_let_in(self, client, monkeypatch):
+        monkeypatch.setenv("WEB_DEV_NO_AUTH", "1")
+        assert client.get("/").status_code == 200
+
+    def remote(self):
+        """A client whose requests appear to come from the internet, not this machine."""
+        from src.web import app as web_app
+
+        return TestClient(web_app.app, follow_redirects=False,
+                          client=("203.0.113.9", 51000))
+
+    def test_a_remote_request_is_not(self, client, monkeypatch):
+        monkeypatch.setenv("WEB_DEV_NO_AUTH", "1")
+        response = self.remote().get("/")
+        assert response.status_code == 303
+        assert response.headers["location"] == "/login"
+
+    def test_a_remote_request_cannot_reach_the_vendor_panel(self, client, monkeypatch):
+        monkeypatch.setenv("WEB_DEV_NO_AUTH", "1")
+        assert self.remote().get("/admin").status_code == 303
+
+    def test_the_flag_off_requires_login_even_locally(self, client, monkeypatch):
+        monkeypatch.delenv("WEB_DEV_NO_AUTH", raising=False)
+        assert client.get("/").status_code == 303

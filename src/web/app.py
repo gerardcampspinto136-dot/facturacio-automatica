@@ -13,6 +13,7 @@ Set WEB_DEV_NO_AUTH=1 to bypass Google login for local testing.
 """
 
 import html
+import logging
 import os
 from datetime import date
 
@@ -26,6 +27,8 @@ from src.finalize import finalize_invoice
 from src.invoice_generator import generate_invoice_pdf
 from src.models import InvoiceData, InvoiceItem
 from src.rectify import create_rectifying_invoice
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Revisión de facturas")
 
@@ -64,6 +67,34 @@ def _get_oauth():
     return _oauth
 
 
+_LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _dev_bypass_allowed(request: Request) -> bool:
+    """Is WEB_DEV_NO_AUTH in force for this request?
+
+    Only ever for a browser on the same machine. The flag is convenient while setting a
+    client up -- it opens the panel with no Google round-trip -- and catastrophic if it
+    is still set the day the panel is put on a public address, because the panel creates
+    companies and reads every client's books.
+
+    Tying it to the caller's address means a forgotten flag cannot expose anything: a
+    remote visitor is asked to log in regardless of what .env says.
+    """
+    if os.getenv("WEB_DEV_NO_AUTH") != "1":
+        return False
+    client = getattr(request, "client", None)
+    host = (client.host if client else "") or ""
+    if host not in _LOCAL_HOSTS:
+        logger.warning(
+            "WEB_DEV_NO_AUTH is set but %s is not local: requiring a real login. "
+            "Remove WEB_DEV_NO_AUTH from .env on anything reachable from outside.",
+            host,
+        )
+        return False
+    return True
+
+
 def _current(request: Request):
     """The account behind this request, or None.
 
@@ -71,7 +102,7 @@ def _current(request: Request):
     revoking a permission or deactivating someone takes effect on their very next click
     instead of whenever they happen to log out.
     """
-    if os.getenv("WEB_DEV_NO_AUTH") == "1" and not request.session.get("user"):
+    if _dev_bypass_allowed(request) and not request.session.get("user"):
         return {"id": 0, "email": "dev@local", "name": "Desarrollo",
                 "role": accounts.SUPERADMIN, "company_id": None,
                 "permissions": [], "active": 1}

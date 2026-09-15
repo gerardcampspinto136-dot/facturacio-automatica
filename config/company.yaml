@@ -53,7 +53,7 @@ review:
   mode: "manual"
   # Emails autorizados a iniciar sesión en la página de revisión.
   reviewers:
-    - "gerardcampspinto136@gmail.com"
+    - "gerardcampspinto@gmail.com"
   notify:
     channels: ["telegram"]     # dónde avisar: "telegram", "email" o ambos
     schedule: "1d"             # cada cuánto recordar las facturas pendientes: 1d, 3d, 1w, 2w
