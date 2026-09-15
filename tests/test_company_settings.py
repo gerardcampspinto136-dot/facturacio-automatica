@@ -220,7 +220,7 @@ class TestSettingsPanel:
     def test_the_company_list_flags_a_missing_bot(self, client):
         as_vendor(client)
         accounts.create_company("Sin bot", tax_id="B12345678")
-        assert "Sin bot de Telegram" in client.get("/admin").text
+        assert "no tiene bot de Telegram" in client.get("/admin").text
 
     def test_the_company_list_shows_a_connected_bot(self, client):
         as_vendor(client)

@@ -15,7 +15,7 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src import accounts
-from src.web.app import _guard, _page, app
+from src.web.app import _empty, _guard, _page, app
 
 _LAST_ADMIN_WARNING = (
     "<div class='card'><b>Es la única cuenta de responsable que queda.</b>"
@@ -51,17 +51,12 @@ def _permission_checkboxes(granted) -> str:
         for key, label in entries:
             checked = " checked" if key in granted else ""
             rows.append(
-                "<label style='display:flex;gap:8px;align-items:center;margin:4px 0;"
-                "color:inherit;font-size:14px'>"
-                f"<input type='checkbox' name='perm' value='{key}'{checked} "
-                f"style='width:auto'>{html.escape(label)}</label>"
+                f"<label class='perm'><input type='checkbox' name='perm' "
+                f"value='{key}'{checked}>{html.escape(label)}</label>"
             )
-        blocks.append(
-            f"<div style='break-inside:avoid;margin-bottom:12px'>"
-            f"<b style='font-size:13px'>{html.escape(group)}</b>{''.join(rows)}</div>"
-        )
-    return ("<div style='columns:2;column-gap:24px;margin-top:6px'>"
-            + "".join(blocks) + "</div>")
+        blocks.append(f"<div class='perm-group'><b>{html.escape(group)}</b>"
+                      f"{''.join(rows)}</div>")
+    return f"<div class='perms'>{''.join(blocks)}</div>"
 
 
 def _describe(member: dict) -> str:
@@ -85,37 +80,52 @@ async def team(request: Request):
                      "Gestiona las empresas cliente en "
                      "<a href='/admin'>Empresas</a>.</div>", user)
 
+    members = accounts.list_users(user["company_id"])
     rows = []
-    for member in accounts.list_users(user["company_id"]):
-        state = "" if member["active"] else " <span class='badge'>desactivada</span>"
-        manage = (f"<a class='btn btn-neutral' href='/team/{member['id']}'>Editar</a>"
+    for member in members:
+        state = ("" if member["active"] else
+                 " <span class='badge badge-muted'>desactivada</span>")
+        manage = (f"<a class='btn btn-neutral btn-sm' href='/team/{member['id']}'>"
+                  f"Editar</a>"
                   if accounts.may_manage(user, member) else
-                  "<span class='muted'>tu propia cuenta</span>"
+                  "<span class='muted'>tu cuenta</span>"
                   if member["id"] == user["id"] else "")
         rows.append(
-            f"<div class='card'><div class='row'>"
-            f"<div><b>{html.escape(member['name'] or member['email'])}</b> "
-            f"{_role_badge(member)}{state}"
-            f"<br><span class='muted'>{html.escape(member['email'])}</span>"
-            f"<br><span class='muted'>{html.escape(_describe(member))}</span></div>"
-            f"<div class='actions'>{manage}</div></div></div>"
+            f"<tr><td><div class='strong'>"
+            f"{html.escape(member['name'] or member['email'])}</div>"
+            f"<span class='muted'>{html.escape(member['email'])}</span></td>"
+            f"<td>{_role_badge(member)}{state}</td>"
+            f"<td class='muted'>{html.escape(_describe(member))}</td>"
+            f"<td>{manage}</td></tr>"
         )
+    table = (
+        "<div class='card'><div class='table-wrap'><table><thead><tr>"
+        "<th>Persona</th><th>Rol</th><th>Puede</th><th></th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div></div>"
+    )
 
     form = (
-        "<div class='card'><b>Dar de alta a alguien del equipo</b>"
-        "<p class='muted'>Entra con su cuenta de Google, así que no hay contraseñas "
-        "que repartir ni que cambiar. Cuando alguien se va, desactivas su cuenta y "
-        "deja de entrar, sin perder nada de lo que hizo.</p>"
+        "<div class='card'>"
+        "<div class='card-title'>Dar de alta a alguien del equipo</div>"
+        "<div class='card-hint'>Entra con su cuenta de Google, así que no hay "
+        "contraseñas que repartir ni que cambiar. Cuando alguien se va, desactivas su "
+        "cuenta y deja de entrar, sin perder nada de lo que hizo.</div>"
         "<form method='post' action='/team/new'>"
-        "<label>Email de su cuenta de Google</label>"
+        "<div class='grid-2'>"
+        "<div><label>Email de su cuenta de Google</label>"
         "<input name='email' type='email' required placeholder='nombre@empresa.com'>"
-        "<label>Nombre</label><input name='name' placeholder='Nombre y apellido'>"
+        "</div>"
+        "<div><label>Nombre</label>"
+        "<input name='name' placeholder='Nombre y apellido'></div></div>"
         "<label>Puede…</label>"
         + _permission_checkboxes(accounts.DEFAULT_EMPLOYEE_PERMISSIONS) +
         "<div class='actions'><button class='btn-primary'>Crear cuenta</button></div>"
         "</form></div>"
     )
-    return _page("Equipo", form + "".join(rows), user)
+    return _page("Equipo", form + table, user,
+                 subtitle=f"{len(members)} cuenta(s) en "
+                          f"{html.escape(user.get('company_name') or 'tu empresa')}",
+                 current="/team")
 
 
 @app.post("/team/new")
@@ -250,21 +260,28 @@ def _company_card(company: dict) -> str:
     owners = [m for m in members if m["role"] == accounts.ADMIN and m["active"]]
     suspended = company["status"] == accounts.SUSPENDED
 
-    badge = ("<span class='badge' style='background:#c53030;color:#fff'>suspendida"
-             "</span>" if suspended else "")
-    warning = ("" if owners else
-               "<div class='muted'>⚠️ No tiene ningún responsable activo: nadie de "
-               "esta empresa puede dar de alta a su equipo.</div>")
+    badge = ("<span class='badge badge-danger'>suspendida</span>" if suspended
+             else "<span class='badge badge-ok'>activa</span>")
 
+    problems = []
+    if not owners:
+        problems.append("no tiene ningún responsable activo, así que nadie de la "
+                        "empresa puede dar de alta a su equipo")
     missing = accounts.missing_settings(company)
     if missing:
-        warning += (f"<div class='muted'>⚠️ Sin configurar: falta "
-                    f"{html.escape(', '.join(missing))}. Sus facturas saldrían "
-                    f"marcadas como prueba.</div>")
+        problems.append("le faltan datos fiscales ("
+                        + html.escape(", ".join(missing))
+                        + "), así que sus facturas saldrían marcadas como prueba")
     if not (company.get("telegram_bot_token") or "").strip():
-        warning += ("<div class='muted'>⚠️ Sin bot de Telegram conectado.</div>")
+        problems.append("no tiene bot de Telegram conectado")
     else:
-        badge += " <span class='badge' style='background:#2f855a;color:#fff'>bot ✓</span>"
+        badge += " <span class='badge badge-ok'>bot ✓</span>"
+
+    warning = ""
+    if problems:
+        items = "".join(f"<li>{p}</li>" for p in problems)
+        warning = (f"<div class='notice notice-warn'><b>Todavía no está lista</b>"
+                   f"<ul style='margin:6px 0 0 18px;padding:0'>{items}</ul></div>")
 
     rows = "".join(
         f"<tr><td>{html.escape(m['name'] or '—')}</td>"
@@ -274,29 +291,31 @@ def _company_card(company: dict) -> str:
         for m in members
     ) or "<tr><td colspan='4' class='muted'>Sin cuentas todavía</td></tr>"
 
+    actions = (
+        f"<a class='btn btn-neutral btn-sm' href='/admin/{company['id']}/settings'>"
+        f"Configurar empresa y bot</a>"
+        f"<form method='post' action='/admin/{company['id']}/status' "
+        f"onsubmit=\"return confirm('&iquest;Cambiar el acceso de esta empresa?')\">"
+        f"<input type='hidden' name='status' value='"
+        f"{accounts.ACTIVE if suspended else accounts.SUSPENDED}'>"
+        f"<button class='{'btn-primary' if suspended else 'btn-neutral'} btn-sm'>"
+        f"{'Reactivar acceso' if suspended else 'Suspender'}</button></form>"
+    )
     return (
         f"<div class='card'><div class='row'>"
-        f"<div><b>{html.escape(company['name'])}</b> {badge}<br>"
-        f"<span class='muted'>{html.escape(company['tax_id'] or 'sin CIF')} · "
-        f"{len(members)} cuenta(s), {len(owners)} responsable(s)</span>{warning}</div>"
-        f"</div>"
-        f"<table><tr><th>Nombre</th><th>Email</th><th>Rol</th>"
-        f"<th class='num'>Último acceso</th></tr>{rows}</table>"
-        f"<div class='actions'>"
-        f"<a class='btn btn-neutral' href='/admin/{company['id']}/settings'>"
-        f"⚙️ Configurar empresa y su bot</a></div>"
+        f"<div><div class='card-title'>{html.escape(company['name'])} {badge}</div>"
+        f"<div class='muted'>{html.escape(company['tax_id'] or 'sin CIF')} &middot; "
+        f"{len(members)} cuenta(s) &middot; {len(owners)} responsable(s)</div></div>"
+        f"<div class='actions'>{actions}</div></div>"
+        f"{warning}"
+        f"<div class='table-wrap'><table><thead><tr><th>Nombre</th><th>Email</th>"
+        f"<th>Rol</th><th class='num'>&Uacute;ltimo acceso</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table></div>"
         f"<form method='post' action='/admin/{company['id']}/owner' class='billform'>"
         f"<input name='email' type='email' placeholder='email del responsable' required>"
         f"<input name='name' placeholder='nombre'>"
-        f"<button class='btn-primary'>Añadir responsable</button></form>"
-        f"<div class='actions'>"
-        f"<form method='post' action='/admin/{company['id']}/status' "
-        f"onsubmit=\"return confirm('¿Cambiar el acceso de esta empresa?')\">"
-        f"<input type='hidden' name='status' value='"
-        f"{accounts.ACTIVE if suspended else accounts.SUSPENDED}'>"
-        f"<button class='{'btn-primary' if suspended else 'btn-warn'}'>"
-        f"{'Reactivar acceso' if suspended else 'Suspender acceso'}</button>"
-        f"</form></div></div>"
+        f"<button class='btn-neutral btn-sm'>A&ntilde;adir responsable</button>"
+        f"</form></div>"
     )
 
 
@@ -307,22 +326,30 @@ async def admin(request: Request):
         return refusal
 
     companies = accounts.list_companies()
+    active = [c for c in companies if c["status"] == accounts.ACTIVE]
+
     form = (
-        "<div class='card'><b>Dar de alta una empresa cliente</b>"
-        "<p class='muted'>Crea la empresa y su primer responsable. A partir de ahí el "
-        "responsable da de alta a su propio equipo sin pasar por ti.</p>"
+        "<div class='card'>"
+        "<div class='card-title'>Dar de alta una empresa cliente</div>"
+        "<div class='card-hint'>Crea la empresa y su primer responsable. A partir de "
+        "ah&iacute; el responsable da de alta a su propio equipo sin pasar por ti.</div>"
         "<form method='post' action='/admin/new'>"
-        "<label>Nombre de la empresa</label><input name='name' required>"
-        "<label>CIF</label><input name='tax_id' placeholder='B12345678'>"
+        "<div class='grid-2'>"
+        "<div><label>Nombre de la empresa</label><input name='name' required></div>"
+        "<div><label>CIF</label><input name='tax_id' placeholder='B12345678'></div>"
+        "</div>"
         "<label>Email del responsable</label>"
         "<input name='owner_email' type='email' required "
         "placeholder='responsable@empresa.com'>"
         "<div class='actions'><button class='btn-primary'>Crear empresa</button></div>"
         "</form></div>"
     )
-    body = form + ("".join(_company_card(c) for c in companies) or
-                   "<div class='empty'>Todavía no hay ninguna empresa cliente.</div>")
-    return _page("Empresas cliente", body, user)
+    listing = "".join(_company_card(c) for c in companies) or _empty(
+        "Todav&iacute;a no hay ninguna empresa cliente",
+        "Crea la primera con el formulario de arriba.")
+    return _page("Empresas cliente", form + listing, user,
+                 subtitle=f"{len(companies)} empresa(s) &middot; {len(active)} activa(s)",
+                 current="/admin")
 
 
 @app.post("/admin/new")

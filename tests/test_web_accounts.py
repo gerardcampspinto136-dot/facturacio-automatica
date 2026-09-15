@@ -83,19 +83,39 @@ class TestAccess:
 # ── The client's employees ───────────────────────────────────────────────────
 
 class TestEmployeePermissions:
-    def test_an_employee_without_invoice_rights_is_refused(self, client, company):
+    def test_an_employee_without_invoice_rights_cannot_see_invoices(self, client, company):
         _seed_session(client, employee(company, permissions=["bills.view"]))
-        response = client.get("/")
+        response = client.get("/pending")
         assert response.status_code == 200
         assert "No tienes permiso" in response.text
 
     def test_the_refusal_names_what_is_missing(self, client, company):
         _seed_session(client, employee(company, permissions=["bills.view"]))
-        assert "Ver las facturas" in client.get("/").text
+        assert "Ver las facturas" in client.get("/pending").text
+
+    def test_the_home_page_welcomes_anyone_signed_in(self, client, company):
+        """It shows only what the account can see, rather than refusing outright.
+
+        Someone who only books supplier bills should land somewhere useful instead of
+        on a refusal, so the dashboard asks for no particular permission.
+        """
+        _seed_session(client, employee(company, permissions=["bills.view"]))
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "No tienes permiso" not in response.text
+        # Their own section is there; the invoice figures are not.
+        assert "Pendiente de pagar" in response.text
+        assert "Pendientes de revisar" not in response.text
+
+    def test_a_granted_employee_sees_the_invoice_figures(self, client, company):
+        _seed_session(client, employee(company, permissions=["invoices.view"]))
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "Pendientes de revisar" in response.text
 
     def test_a_granted_employee_gets_in(self, client, company):
         _seed_session(client, employee(company, permissions=["invoices.view"]))
-        response = client.get("/")
+        response = client.get("/pending")
         assert response.status_code == 200
         assert "No tienes permiso" not in response.text
 
@@ -133,19 +153,19 @@ class TestNavigation:
     def test_an_employee_is_not_shown_tabs_they_cannot_open(self, client, company):
         _seed_session(client, employee(company, permissions=["invoices.view"]))
         body = client.get("/").text
-        assert 'href="/bills"' not in body
-        assert 'href="/team"' not in body
-        assert 'href="/admin"' not in body
+        assert "href='/bills'" not in body
+        assert "href='/team'" not in body
+        assert "href='/admin'" not in body
 
     def test_an_owner_is_shown_the_team_tab(self, client, owner):
         _seed_session(client, owner)
         body = client.get("/").text
-        assert 'href="/team"' in body
-        assert 'href="/admin"' not in body
+        assert "href='/team'" in body
+        assert "href='/admin'" not in body
 
     def test_the_vendor_is_shown_the_companies_tab(self, client, vendor):
         _seed_session(client, vendor)
-        assert 'href="/admin"' in client.get("/admin").text
+        assert "href='/admin'" in client.get("/admin").text
 
 
 # ── The owner managing their own staff ───────────────────────────────────────
@@ -319,7 +339,7 @@ class TestDataIsolationGuard:
     def test_a_second_active_company_closes_the_books(self, client, company, owner):
         accounts.create_company("Otra Empresa S.L.")
         _seed_session(client, owner)
-        for path in ("/", "/issued", "/bills", "/receivables"):
+        for path in ("/", "/pending", "/issued", "/bills", "/receivables"):
             assert "más de una empresa activa" in client.get(path).text, path
 
     def test_suspending_the_second_company_reopens_them(self, client, company, owner):

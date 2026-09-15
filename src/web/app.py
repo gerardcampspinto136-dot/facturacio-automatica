@@ -202,79 +202,379 @@ def _guard(request: Request, permission: str | None = None):
 # ── HTML helpers ─────────────────────────────────────────────────────────────
 
 _STYLE = """
-:root { color-scheme: light dark; }
+/* ── Design tokens ──────────────────────────────────────────────────────────
+   One place for colour, spacing and type. Everything below refers to these, so
+   restyling for a client is changing a handful of values, not hunting hex codes. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #fbfcfd;
+  --border: #e3e8ee;
+  --border-strong: #d3dae3;
+  --text: #1a2233;
+  --text-muted: #667085;
+  --text-faint: #98a2b3;
+  --brand: #1f3a5f;
+  --brand-soft: #eef2f7;
+  /* The primary button needs its own pair: in dark mode --brand becomes a pale tint
+     for text and headings, and white lettering on top of that is unreadable. */
+  --btn-bg: #1f3a5f;
+  --btn-fg: #ffffff;
+  --accent: #2563eb;
+  --ok: #067647;
+  --ok-soft: #ecfdf3;
+  --warn: #b54708;
+  --warn-soft: #fffaeb;
+  --danger: #b42318;
+  --danger-soft: #fef3f2;
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.04);
+  --shadow-lg: 0 4px 12px rgba(16,24,40,.08);
+  --radius: 10px;
+  --sidebar: 248px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1420; --surface: #161c2a; --surface-2: #1a2130;
+    --border: #262f42; --border-strong: #33405a;
+    --text: #e8ecf4; --text-muted: #94a3b8; --text-faint: #64748b;
+    --brand: #b9cbe6; --brand-soft: #1c2739;
+    --btn-bg: #2f6feb; --btn-fg: #ffffff;
+    --accent: #6ea8fe;
+    --ok: #4ade80; --ok-soft: #10261c;
+    --warn: #fbbf24; --warn-soft: #2a2010;
+    --danger: #f87171; --danger-soft: #2b1614;
+    --shadow: none; --shadow-lg: none;
+  }
+}
+
 * { box-sizing: border-box; }
-body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
-  background: Canvas; color: CanvasText; }
-.wrap { max-width: 820px; margin: 0 auto; padding: 20px 16px 60px; }
-header { display: flex; justify-content: space-between; align-items: center; gap: 12px;
-  border-bottom: 2px solid #1a3a5c; padding-bottom: 12px; margin-bottom: 20px; flex-wrap: wrap; }
-h1 { font-size: 20px; margin: 0; color: #2b6cb0; }
-a { color: #2b6cb0; }
-.card { border: 1px solid #d0d7de; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
-.row { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.muted { color: #6e7781; font-size: 13px; }
-.total { font-weight: 700; font-size: 17px; }
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-button, .btn { border: 0; border-radius: 8px; padding: 9px 14px; font-size: 14px; cursor: pointer;
-  text-decoration: none; display: inline-block; }
-.btn-primary { background: #2f855a; color: #fff; }
-.btn-danger { background: #c53030; color: #fff; }
-.btn-neutral { background: #e2e8f0; color: #1a202c; }
-.btn-warn { background: #dd6b20; color: #fff; }
-input, textarea { width: 100%; padding: 8px; border: 1px solid #cbd5e0; border-radius: 6px;
-  background: Field; color: FieldText; font-size: 14px; }
-label { font-size: 13px; color: #6e7781; display: block; margin: 10px 0 4px; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--text);
+  font-size: 15px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Shell: sidebar + content ─────────────────────────────────────────────── */
+.shell { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: var(--sidebar); flex: 0 0 var(--sidebar);
+  background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
+}
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 18px 18px 14px; border-bottom: 1px solid var(--border);
+}
+.brand-mark {
+  width: 32px; height: 32px; border-radius: 8px; flex: 0 0 32px;
+  background: var(--brand); color: #fff; display: grid; place-items: center;
+  font-weight: 700; font-size: 14px; letter-spacing: .5px;
+}
+.brand-name { font-weight: 650; font-size: 14px; line-height: 1.2; }
+.brand-sub { font-size: 12px; color: var(--text-faint); }
+
+.nav { padding: 12px 10px; overflow-y: auto; flex: 1; }
+.nav-group { margin-bottom: 14px; }
+.nav-label {
+  font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-faint); padding: 0 10px 6px;
+}
+.nav a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 8px; margin-bottom: 2px;
+  color: var(--text); font-size: 14px; text-decoration: none;
+}
+.nav a:hover { background: var(--brand-soft); text-decoration: none; }
+.nav a.active { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+.nav .ico { width: 18px; text-align: center; flex: 0 0 18px; opacity: .85; }
+.nav .count {
+  margin-left: auto; font-size: 11px; font-weight: 600;
+  background: var(--danger-soft); color: var(--danger);
+  padding: 1px 7px; border-radius: 999px;
+}
+
+.whoami {
+  border-top: 1px solid var(--border); padding: 12px 14px;
+  display: flex; align-items: center; gap: 10px;
+}
+.avatar {
+  width: 32px; height: 32px; flex: 0 0 32px; border-radius: 50%;
+  background: var(--brand-soft); color: var(--brand);
+  display: grid; place-items: center; font-weight: 650; font-size: 13px;
+}
+.whoami-text { min-width: 0; }
+.whoami-name {
+  font-size: 13px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.whoami-sub { font-size: 12px; color: var(--text-faint); }
+
+.content { flex: 1; min-width: 0; padding: 26px 30px 60px; max-width: 1100px; }
+.page-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; margin-bottom: 22px;
+}
+h1 { font-size: 22px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
+.page-sub { color: var(--text-muted); font-size: 14px; margin-top: 3px; }
+h2 { font-size: 16px; font-weight: 650; margin: 26px 0 12px; }
+
+/* ── Cards, stats, tables ─────────────────────────────────────────────────── */
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px; margin-bottom: 14px;
+  box-shadow: var(--shadow);
+}
+.card-title { font-weight: 650; font-size: 15px; margin-bottom: 4px; }
+.card-hint { color: var(--text-muted); font-size: 13px; margin-bottom: 14px; }
+
+.stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-bottom: 8px; }
+.stat {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 15px 16px; box-shadow: var(--shadow); display: block; color: inherit;
+}
+a.stat:hover { border-color: var(--border-strong); box-shadow: var(--shadow-lg); text-decoration: none; }
+.stat-label { font-size: 12.5px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+.stat-value { font-size: 25px; font-weight: 680; letter-spacing: -.02em; margin-top: 5px; }
+.stat-note { font-size: 12px; color: var(--text-faint); margin-top: 2px; }
+.stat-note.bad { color: var(--danger); }
+.stat-note.good { color: var(--ok); }
+
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; }
-td.num, th.num { text-align: right; }
-.empty { text-align: center; color: #6e7781; padding: 40px 0; }
-.billform { display: grid; grid-template-columns: 2fr 1fr 1.5fr 1fr auto; gap: 8px;
-  align-items: center; margin-top: 10px; }
-@media (max-width: 700px) { .billform { grid-template-columns: 1fr; } }
-.badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #e2e8f0; color: #1a202c; }
+thead th {
+  text-align: left; font-size: 11.5px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--text-faint);
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+}
+tbody td { padding: 11px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--surface-2); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.table-wrap { overflow-x: auto; }
+.strong { font-weight: 600; }
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+button, .btn {
+  border: 1px solid transparent; border-radius: 8px; padding: 8px 14px;
+  font-size: 13.5px; font-weight: 550; font-family: inherit; cursor: pointer;
+  text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
+  line-height: 1.4;
+}
+button:hover, .btn:hover { text-decoration: none; filter: brightness(.96); }
+.btn-primary { background: var(--btn-bg); color: var(--btn-fg); }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-warn { background: var(--warn); color: #fff; }
+.btn-neutral { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+.btn-sm { padding: 5px 10px; font-size: 12.5px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.card > .actions { margin-top: 14px; }
+
+/* ── Forms ────────────────────────────────────────────────────────────────── */
+label { display: block; font-size: 13px; font-weight: 550; margin: 14px 0 5px; }
+label:first-of-type { margin-top: 0; }
+input, textarea, select {
+  width: 100%; padding: 9px 11px; font-size: 14px; font-family: inherit;
+  border: 1px solid var(--border-strong); border-radius: 8px;
+  background: var(--surface); color: var(--text);
+}
+input:focus, textarea:focus, select:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.12);
+}
+.field-hint { font-weight: 400; color: var(--text-faint); }
+.grid-2 { display: grid; gap: 0 16px; grid-template-columns: 1fr 1fr; }
+.billform { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+.billform input { width: auto; flex: 1 1 160px; }
+.perms { columns: 2; column-gap: 26px; margin-top: 8px; }
+.perm-group { break-inside: avoid; margin-bottom: 14px; }
+.perm-group b { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint); }
+.perm {
+  display: flex; gap: 9px; align-items: center; margin: 7px 0;
+  font-size: 13.5px; font-weight: 400; cursor: pointer;
+}
+.perm input { width: auto; flex: 0 0 auto; }
+
+/* ── Badges and notices ───────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+  background: var(--brand-soft); color: var(--brand); white-space: nowrap;
+}
+.badge-ok { background: var(--ok-soft); color: var(--ok); }
+.badge-warn { background: var(--warn-soft); color: var(--warn); }
+.badge-danger { background: var(--danger-soft); color: var(--danger); }
+.badge-muted { background: var(--bg); color: var(--text-faint); }
+
+.notice {
+  border: 1px solid var(--border); border-left: 3px solid var(--text-faint);
+  background: var(--surface); border-radius: 8px; padding: 13px 15px; margin-bottom: 14px;
+  font-size: 14px;
+}
+.notice-ok { border-left-color: var(--ok); background: var(--ok-soft); }
+.notice-warn { border-left-color: var(--warn); background: var(--warn-soft); }
+.notice-danger { border-left-color: var(--danger); background: var(--danger-soft); }
+.notice b { display: block; margin-bottom: 2px; }
+
+.muted { color: var(--text-muted); font-size: 13px; }
+.total { font-weight: 650; font-size: 16px; font-variant-numeric: tabular-nums; }
+.row { display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
+.empty {
+  text-align: center; color: var(--text-muted); padding: 48px 20px;
+  background: var(--surface); border: 1px dashed var(--border-strong); border-radius: var(--radius);
+}
+.empty-title { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+
+/* ── Small screens ────────────────────────────────────────────────────────── */
+@media (max-width: 860px) {
+  .shell { flex-direction: column; }
+  .sidebar { width: 100%; flex: none; height: auto; position: static; border-right: 0;
+             border-bottom: 1px solid var(--border); }
+  .nav { display: flex; gap: 4px; overflow-x: auto; padding: 8px 10px; }
+  .nav-group { margin: 0; display: flex; gap: 4px; }
+  .nav-label { display: none; }
+  .nav a { white-space: nowrap; padding: 7px 12px; }
+  .nav .count { margin-left: 6px; }
+  .whoami { border-top: 0; border-bottom: 1px solid var(--border); }
+  .content { padding: 18px 16px 50px; }
+  .grid-2, .perms { grid-template-columns: 1fr; columns: 1; }
+}
 """
 
+# Sidebar entries: (permission, href, icon, label). A None permission is always shown.
+_NAV = (
+    ("Facturación", (
+        (None, "/", "◎", "Inicio"),
+        ("invoices.view", "/pending", "◷", "Pendientes"),
+        ("invoices.view", "/issued", "▤", "Emitidas"),
+        ("receivables.view", "/receivables", "↓", "Cobros"),
+    )),
+    ("Gastos", (
+        ("bills.view", "/bills", "↑", "Proveedores"),
+    )),
+    ("Administración", (
+        ("users.manage", "/team", "◍", "Equipo"),
+        ("companies.manage", "/admin", "⌂", "Empresas"),
+    )),
+)
 
-def _page(title: str, body: str, user=None) -> HTMLResponse:
-    """Render a page. `user` may be an account dict or just an email string.
 
-    The navigation only offers what this account can actually open: showing an employee
-    a "Proveedores" tab that refuses them is a worse experience than not showing it.
+def _initials(user: dict) -> str:
+    source = (user.get("name") or user.get("email") or "?").strip()
+    parts = [p for p in source.replace(".", " ").replace("@", " ").split() if p]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[1][0]).upper()
+    return source[:2].upper()
+
+
+def _role_name(user: dict) -> str:
+    return {accounts.SUPERADMIN: "Proveedor",
+            accounts.ADMIN: "Responsable",
+            accounts.EMPLOYEE: "Empleado"}.get(user.get("role"), "")
+
+
+def _sidebar(user: dict, current: str) -> str:
+    """The navigation, showing only what this account can actually open.
+
+    Offering an employee a tab that refuses them is worse than not offering it, so the
+    permission that guards each page is the same one that decides whether it is listed.
     """
-    nav = ""
-    if user:
-        if isinstance(user, str):
-            user = accounts.find_by_email(user) or {"email": user, "role": "", "permissions": []}
-
+    groups = []
+    for label, entries in _NAV:
         links = []
-        if accounts.can(user, "invoices.view"):
-            links.append('<a href="/">Pendientes</a><a href="/issued">Emitidas</a>')
-        if accounts.can(user, "bills.view"):
-            links.append('<a href="/bills">Proveedores</a>')
-        if accounts.can(user, "receivables.view"):
-            links.append('<a href="/receivables">Cobros</a>')
-        if accounts.can(user, "users.manage"):
-            links.append('<a href="/team">Equipo</a>')
-        if accounts.can(user, "companies.manage"):
-            links.append('<a href="/admin">Empresas</a>')
+        for permission, href, icon, text in entries:
+            if permission and not accounts.can(user, permission):
+                continue
+            active = " active" if href == current else ""
+            badge = ""
+            if href == "/pending":
+                try:
+                    waiting = len(store.list_pending())
+                except Exception:
+                    waiting = 0
+                if waiting:
+                    badge = f"<span class='count'>{waiting}</span>"
+            links.append(
+                f"<a class='{active.strip()}' href='{href}'>"
+                f"<span class='ico'>{icon}</span>{html.escape(text)}{badge}</a>"
+            )
+        if links:
+            groups.append(
+                f"<div class='nav-group'><div class='nav-label'>{html.escape(label)}"
+                f"</div>{''.join(links)}</div>"
+            )
 
-        who = html.escape(user.get("name") or user.get("email", ""))
-        where = user.get("company_name")
-        if where:
-            who += f" · {html.escape(where)}"
-
-        nav = (
-            f'<div class="row" style="gap:14px;align-items:center">'
-            f'{"".join(links)}'
-            f'<span class="muted">{who} · <a href="/logout">salir</a></span></div>'
-        )
-    return HTMLResponse(
-        f"<!doctype html><html lang='es'><head><meta charset='utf-8'>"
-        f"<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>{html.escape(title)}</title><style>{_STYLE}</style></head><body><div class='wrap'>"
-        f"<header><h1>{html.escape(title)}</h1>{nav}</header>{body}</div></body></html>"
+    company = user.get("company_name") or ("Panel del proveedor"
+                                           if user.get("role") == accounts.SUPERADMIN
+                                           else "")
+    return (
+        "<aside class='sidebar'>"
+        "<div class='brand'><div class='brand-mark'>FA</div><div>"
+        "<div class='brand-name'>Facturación</div>"
+        f"<div class='brand-sub'>{html.escape(company or 'Sin empresa')}</div>"
+        "</div></div>"
+        f"<nav class='nav'>{''.join(groups)}</nav>"
+        "<div class='whoami'>"
+        f"<div class='avatar'>{html.escape(_initials(user))}</div>"
+        "<div class='whoami-text'>"
+        f"<div class='whoami-name'>{html.escape(user.get('name') or user.get('email',''))}</div>"
+        f"<div class='whoami-sub'>{html.escape(_role_name(user))} · "
+        "<a href='/logout'>salir</a></div></div></div>"
+        "</aside>"
     )
+
+
+def _page(title: str, body: str, user=None, subtitle: str = "",
+          current: str = "", actions: str = "") -> HTMLResponse:
+    """Render one page inside the shell.
+
+    `user` may be an account dict or an email string, because a couple of callers only
+    have the address to hand.
+    """
+    if isinstance(user, str):
+        user = accounts.find_by_email(user) or {
+            "email": user, "role": "", "permissions": [], "active": 1}
+
+    head = (
+        f"<div class='page-head'><div><h1>{html.escape(title)}</h1>"
+        + (f"<div class='page-sub'>{subtitle}</div>" if subtitle else "")
+        + "</div>"
+        + (f"<div class='actions'>{actions}</div>" if actions else "")
+        + "</div>"
+    )
+
+    if user:
+        shell = (f"<div class='shell'>{_sidebar(user, current)}"
+                 f"<main class='content'>{head}{body}</main></div>")
+    else:
+        # Signed out: no navigation to offer, so the message stands on its own.
+        shell = (f"<div class='content' style='max-width:560px;margin:60px auto'>"
+                 f"{head}{body}</div>")
+
+    return HTMLResponse(
+        "<!doctype html><html lang='es'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<title>{html.escape(title)} · Facturación</title>"
+        f"<style>{_STYLE}</style></head><body>{shell}</body></html>"
+    )
+
+
+def _stat(label: str, value: str, note: str = "", tone: str = "",
+          href: str = "") -> str:
+    """One headline number on the dashboard."""
+    inner = (f"<div class='stat-label'>{html.escape(label)}</div>"
+             f"<div class='stat-value'>{value}</div>"
+             + (f"<div class='stat-note {tone}'>{note}</div>" if note else ""))
+    if href:
+        return f"<a class='stat' href='{href}'>{inner}</a>"
+    return f"<div class='stat'>{inner}</div>"
+
+
+def _empty(title: str, hint: str = "") -> str:
+    return (f"<div class='empty'><div class='empty-title'>{html.escape(title)}</div>"
+            + (f"<div class='muted'>{hint}</div>" if hint else "") + "</div>")
 
 
 def _money(value: float) -> str:
@@ -327,36 +627,135 @@ async def logout(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    """The home page: the state of the business in one screen.
+
+    Deliberately asks for no particular permission. It shows only the sections the
+    account can see, so someone who only books supplier bills lands somewhere useful
+    instead of on a refusal -- the old home page was the pending-invoice list, which
+    told a bookkeeper nothing and refused half the staff outright.
+    """
+    user, refusal = _guard(request)
+    if refusal:
+        return refusal
+    blocked = _refuse_shared_data(user)
+    if blocked is not None:
+        return blocked
+
+    config = get_config()
+    tiles, sections = [], []
+
+    if accounts.can(user, "invoices.view"):
+        pending = store.list_pending()
+        waiting = sum(_totals(p["invoice"])[2] for p in pending)
+        tiles.append(_stat(
+            "Pendientes de revisar", str(len(pending)),
+            _money(waiting) if pending else "nada esperando",
+            "bad" if pending else "", "/pending"))
+
+    if accounts.can(user, "receivables.view"):
+        unpaid = store.list_unpaid()
+        owed = sum(_totals(u["invoice"])[2] for u in unpaid)
+        late = [u for u in unpaid if u["days_overdue"] > 0]
+        tiles.append(_stat(
+            "Pendiente de cobrar", _money(owed),
+            f"{len(late)} vencida(s)" if late else f"{len(unpaid)} factura(s)",
+            "bad" if late else "", "/receivables"))
+
+    if accounts.can(user, "bills.view"):
+        to_pay = bills.total_owed()
+        overdue = bills.total_owed(overdue_only=True)
+        tiles.append(_stat(
+            "Pendiente de pagar", _money(to_pay),
+            f"{_money(overdue)} ya vencido" if overdue else "nada vencido",
+            "bad" if overdue else "good", "/bills"))
+
+    if accounts.can(user, "stock.view"):
+        from src import catalog
+
+        low = catalog.low_stock()
+        tiles.append(_stat(
+            "Productos por reponer", str(len(low)),
+            ", ".join(p["name"] for p in low[:2]) if low else "todo por encima del mínimo",
+            "bad" if low else "good"))
+
+    if config.is_placeholder:
+        sections.append(
+            "<div class='notice notice-warn'><b>Esta instalación no está configurada.</b>"
+            "Los datos de la empresa siguen siendo los de ejemplo, así que cada factura "
+            "sale marcada como <b>DOCUMENTO DE PRUEBA</b>. "
+            + ("<a href='/admin'>Configúrala aquí</a>."
+               if accounts.can(user, "companies.manage") else
+               "Avisa a quien administra el sistema.") + "</div>")
+
+    if accounts.can(user, "invoices.view"):
+        pending = store.list_pending()
+        if pending:
+            sections.append("<h2>Facturas esperando tu revisión</h2>"
+                            + _pending_table(pending, user))
+        else:
+            sections.append(
+                "<h2>Facturas pendientes</h2>"
+                + _empty("Nada pendiente de revisar",
+                         "Cuando dictes una factura al bot aparecerá aquí."))
+
+    return _page("Inicio", f"<div class='stats'>{''.join(tiles)}</div>"
+                 + "".join(sections), user,
+                 subtitle=f"{html.escape(config.name)} · "
+                          f"{date.today().strftime('%d/%m/%Y')}",
+                 current="/")
+
+
+def _pending_table(pending, user) -> str:
+    """Pending invoices as a table: scannable, and the actions line up."""
+    may_approve = accounts.can(user, "invoices.approve")
+    may_edit = accounts.can(user, "invoices.create")
+
+    rows = []
+    for p in pending:
+        inv = p["invoice"]
+        _, _, total = _totals(inv)
+        email = (f"<span class='muted'>{html.escape(inv.client_email)}</span>"
+                 if inv.client_email else
+                 "<span class='badge badge-warn'>sin email</span>")
+        buttons = [f"<a class='btn btn-neutral btn-sm' href='/invoice/{p['token']}/pdf' "
+                   f"target='_blank'>PDF</a>"]
+        if may_edit:
+            buttons.append(f"<a class='btn btn-neutral btn-sm' "
+                           f"href='/invoice/{p['token']}'>Editar</a>")
+        if may_approve:
+            buttons.append(
+                f"<form method='post' action='/invoice/{p['token']}/approve'>"
+                f"<button class='btn-primary btn-sm'>Aprobar y enviar</button></form>")
+            buttons.append(
+                f"<form method='post' action='/invoice/{p['token']}/reject' "
+                f"onsubmit=\"return confirm('¿Descartar esta factura?')\">"
+                f"<button class='btn-neutral btn-sm'>Descartar</button></form>")
+        rows.append(
+            f"<tr><td><div class='strong'>"
+            f"{html.escape(inv.client_name or 'Sin nombre')}</div>{email}</td>"
+            f"<td class='muted'>{p.get('created','')[:10]}</td>"
+            f"<td class='num total'>{_money(total)}</td>"
+            f"<td><div class='actions'>{''.join(buttons)}</div></td></tr>"
+        )
+    return ("<div class='card'><div class='table-wrap'><table><thead><tr>"
+            "<th>Cliente</th><th>Creada</th><th class='num'>Total</th><th></th>"
+            f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div></div>")
+
+
+@app.get("/pending", response_class=HTMLResponse)
+async def pending_page(request: Request):
     user, refusal = _guard(request, "invoices.view")
     if refusal:
         return refusal
 
-    pend = store.list_pending()
-    if not pend:
-        body = "<div class='empty'>No hay facturas pendientes de revisión. 🎉</div>"
-        return _page("Facturas pendientes", body, user)
-
-    cards = []
-    for p in pend:
-        inv = p["invoice"]
-        _, _, total = _totals(inv)
-        email = html.escape(inv.client_email or "⚠️ sin email")
-        cards.append(
-            f"<div class='card'><div class='row'>"
-            f"<div><b>{html.escape(inv.client_name or 'Sin nombre')}</b><br>"
-            f"<span class='muted'>{email} · {p.get('created','')[:10]}</span></div>"
-            f"<div class='total'>{_money(total)}</div></div>"
-            f"<div class='actions'>"
-            f"<a class='btn btn-neutral' href='/invoice/{p['token']}/pdf' target='_blank'>Ver PDF</a>"
-            f"<a class='btn btn-neutral' href='/invoice/{p['token']}'>Editar</a>"
-            f"<form method='post' action='/invoice/{p['token']}/approve' style='display:inline'>"
-            f"<button class='btn-primary'>Aprobar y enviar</button></form>"
-            f"<form method='post' action='/invoice/{p['token']}/reject' style='display:inline' "
-            f"onsubmit=\"return confirm('¿Descartar esta factura?')\">"
-            f"<button class='btn-danger'>Rechazar</button></form>"
-            f"</div></div>"
-        )
-    return _page("Facturas pendientes", "".join(cards), user)
+    pending = store.list_pending()
+    body = (_pending_table(pending, user) if pending else
+            _empty("No hay nada pendiente de revisar",
+                   "Cuando dictes una factura al bot aparecerá aquí para que la "
+                   "apruebes antes de enviarse."))
+    return _page("Facturas pendientes", body, user,
+                 subtitle="Revisa y aprueba antes de que salgan al cliente",
+                 current="/pending")
 
 
 @app.get("/invoice/{token}", response_class=HTMLResponse)
@@ -478,30 +877,60 @@ async def issued(request: Request):
         return refusal
     records = store.list_issued()
     if not records:
-        return _page("Facturas emitidas", "<div class='empty'>Aún no hay facturas emitidas.</div>", user)
+        return _page("Facturas emitidas", _empty(
+            "Todavía no has emitido ninguna factura",
+            "Las que apruebes aparecerán aquí, con su número definitivo."),
+            user, current="/issued")
 
-    cards = []
+    may_rectify = accounts.can(user, "invoices.rectify")
+    total_issued = sum(_totals(r["invoice"])[2] for r in records)
+
+    rows = []
     for r in records:
         inv = r["invoice"]
         _, _, total = _totals(inv)
         rectified = r.get("rectified_by")
-        badge = f"<span class='badge'>Rectificada por {html.escape(rectified)}</span>" if rectified else ""
+
+        if rectified:
+            state = (f"<span class='badge badge-muted'>anulada por "
+                     f"{html.escape(rectified)}</span>")
+        elif inv.rectifies:
+            state = (f"<span class='badge badge-warn'>rectificativa de "
+                     f"{html.escape(inv.rectifies)}</span>")
+        else:
+            state = "<span class='badge badge-ok'>emitida</span>"
+
         action = ""
-        if not rectified and not inv.rectifies:
+        if may_rectify and not rectified and not inv.rectifies:
             action = (
-                f"<form method='post' action='/invoice/{html.escape(inv.invoice_number)}/rectify' "
-                f"style='display:inline' onsubmit=\"return confirm('¿Emitir factura rectificativa "
-                f"que anula {html.escape(inv.invoice_number)}?')\">"
-                f"<button class='btn-warn'>Anular (rectificativa)</button></form>"
-            )
-        cards.append(
-            f"<div class='card'><div class='row'>"
-            f"<div><b>{html.escape(inv.invoice_number or '')}</b> — {html.escape(inv.client_name or '')}"
-            f" {badge}<br><span class='muted'>{r.get('issued_at','')[:10]}</span></div>"
-            f"<div class='total'>{_money(total)}</div></div>"
-            f"<div class='actions'>{action}</div></div>"
+                f"<form method='post' action='/invoice/"
+                f"{html.escape(inv.invoice_number)}/rectify' "
+                f"onsubmit=\"return confirm('¿Emitir una factura rectificativa que "
+                f"anula {html.escape(inv.invoice_number)}?')\">"
+                f"<button class='btn-neutral btn-sm'>Anular</button></form>")
+
+        rows.append(
+            f"<tr><td class='strong'>{html.escape(inv.invoice_number or '')}</td>"
+            f"<td>{html.escape(inv.client_name or '')}</td>"
+            f"<td class='muted'>{r.get('issued_at','')[:10]}</td>"
+            f"<td>{state}</td>"
+            f"<td class='num total'>{_money(total)}</td>"
+            f"<td><div class='actions'>{action}</div></td></tr>"
         )
-    return _page("Facturas emitidas", "".join(cards), user)
+
+    body = (
+        f"<div class='stats'>"
+        f"{_stat('Facturas emitidas', str(len(records)))}"
+        f"{_stat('Facturado en total', _money(total_issued))}"
+        f"</div>"
+        "<div class='card'><div class='table-wrap'><table><thead><tr>"
+        "<th>Número</th><th>Cliente</th><th>Fecha</th><th>Estado</th>"
+        "<th class='num'>Total</th><th></th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div></div>"
+    )
+    return _page("Facturas emitidas", body, user,
+                 subtitle="Ya enviadas al cliente. Anular emite una rectificativa.",
+                 current="/issued")
 
 
 @app.post("/invoice/{number}/rectify")
@@ -528,51 +957,66 @@ async def bills_page(request: Request):
     owed = bills.total_owed()
     overdue = bills.total_owed(overdue_only=True)
 
-    head = (
-        f"<div class='card'><div class='row'>"
-        f"<div><b>Pendiente de pagar</b><br>"
-        f"<span class='muted'>{len(unpaid)} factura(s) de proveedor</span></div>"
-        f"<div class='total'>{_money(owed)}</div></div>"
-        + (f"<div class='muted'>De las cuales <b>{_money(overdue)}</b> ya vencidas.</div>"
-           if overdue else "")
-        + "</div>"
+    may_manage = accounts.can(user, "bills.manage")
+
+    tiles = (
+        f"<div class='stats'>"
+        f"{_stat('Pendiente de pagar', _money(owed), f'{len(unpaid)} factura(s)')}"
+        f"{_stat('Ya vencido', _money(overdue), 'páguelo cuanto antes' if overdue else 'nada vencido', 'bad' if overdue else 'good')}"
+        f"</div>"
     )
 
-    form = (
-        "<div class='card'><b>Anotar una factura recibida</b>"
-        "<form method='post' action='/bills/new' class='billform'>"
-        "<input name='supplier' placeholder='Proveedor' required>"
-        "<input name='total' type='number' step='0.01' placeholder='Importe total (con IVA)' required>"
-        "<input name='reference' placeholder='Su nº de factura (opcional)'>"
-        "<input name='due_date' type='date' title='Vencimiento (opcional)'>"
-        "<button class='btn-primary'>Guardar</button>"
-        "</form></div>"
-    )
+    form = ("<div class='card'><div class='card-title'>Anotar una factura recibida</div>"
+            "<div class='card-hint'>O mándale una foto del ticket al bot y la anota "
+            "él solo.</div>"
+            "<form method='post' action='/bills/new' class='billform'>"
+            "<input name='supplier' placeholder='Proveedor' required>"
+            "<input name='total' type='number' step='0.01' "
+            "placeholder='Importe con IVA' required>"
+            "<input name='reference' placeholder='Su nº de factura'>"
+            "<input name='due_date' type='date' title='Vencimiento'>"
+            "<button class='btn-primary'>Guardar</button></form></div>"
+            ) if may_manage else ""
 
-    cards = []
     today = date.today().isoformat()
+    rows = []
     for b in unpaid:
         due = b["due_date"] or ""
-        late = due and due < today
-        when = (f"<span class='badge'>Vencida el {due}</span>" if late
-                else f"<span class='muted'>Vence el {due}</span>" if due else "")
-        ref = f" · {html.escape(b['reference'])}" if b.get("reference") else ""
-        cards.append(
-            f"<div class='card'><div class='row'>"
-            f"<div><b>{html.escape(b['supplier_name'])}</b>{ref}<br>{when}</div>"
-            f"<div class='total'>{_money(b['total'])}</div></div>"
-            f"<div class='actions'>"
-            f"<form method='post' action='/bills/{b['id']}/paid' style='display:inline'>"
-            f"<button class='btn-primary'>Marcar pagada</button></form>"
-            f"<form method='post' action='/bills/{b['id']}/delete' style='display:inline' "
-            f"onsubmit=\"return confirm('¿Borrar esta factura de proveedor?')\">"
-            f"<button class='btn-warn'>Borrar</button></form>"
-            f"</div></div>"
-        )
-    if not cards:
-        cards.append("<div class='card'>No hay facturas de proveedor pendientes.</div>")
+        if due and due < today:
+            when = f"<span class='badge badge-danger'>venció el {due}</span>"
+        elif due:
+            when = f"<span class='muted'>vence el {due}</span>"
+        else:
+            when = "<span class='muted'>sin vencimiento</span>"
 
-    return _page("Pagos a proveedores", head + form + "".join(cards), user)
+        buttons = ""
+        if may_manage:
+            buttons = (
+                f"<form method='post' action='/bills/{b['id']}/paid'>"
+                f"<button class='btn-primary btn-sm'>Marcar pagada</button></form>"
+                f"<form method='post' action='/bills/{b['id']}/delete' "
+                f"onsubmit=\"return confirm('¿Borrar esta factura de proveedor?')\">"
+                f"<button class='btn-neutral btn-sm'>Borrar</button></form>")
+
+        rows.append(
+            f"<tr><td><div class='strong'>{html.escape(b['supplier_name'])}</div>"
+            + (f"<span class='muted'>{html.escape(b['reference'])}</span>"
+               if b.get("reference") else "")
+            + f"</td><td>{when}</td>"
+            f"<td class='num total'>{_money(b['total'])}</td>"
+            f"<td><div class='actions'>{buttons}</div></td></tr>"
+        )
+
+    table = (
+        "<div class='card'><div class='table-wrap'><table><thead><tr>"
+        "<th>Proveedor</th><th>Vencimiento</th><th class='num'>Importe</th><th></th>"
+        f"</tr></thead><tbody>{''.join(rows)}</tbody></table></div></div>"
+    ) if rows else _empty("No debes nada a proveedores",
+                          "Todo lo anotado está pagado.")
+
+    return _page("Pagos a proveedores", tiles + form + table, user,
+                 subtitle="Lo que tu empresa debe y cuándo vence",
+                 current="/bills")
 
 
 @app.post("/bills/new")
@@ -626,33 +1070,48 @@ async def receivables_page(request: Request):
     total = sum(_totals(u["invoice"])[2] for u in unpaid)
     late = [u for u in unpaid if u["days_overdue"] > 0]
 
-    head = (
-        f"<div class='card'><div class='row'>"
-        f"<div><b>Pendiente de cobrar</b><br>"
-        f"<span class='muted'>{len(unpaid)} factura(s), {len(late)} vencida(s)</span></div>"
-        f"<div class='total'>{_money(total)}</div></div></div>"
+    overdue_total = sum(_totals(u["invoice"])[2] for u in late)
+    may_manage = accounts.can(user, "receivables.manage")
+
+    tiles = (
+        f"<div class='stats'>"
+        f"{_stat('Pendiente de cobrar', _money(total), f'{len(unpaid)} factura(s)')}"
+        f"{_stat('Vencido', _money(overdue_total), f'{len(late)} factura(s) con retraso' if late else 'nadie te debe con retraso', 'bad' if late else 'good')}"
+        f"</div>"
     )
 
-    cards = []
+    rows = []
     for u in unpaid:
         inv = u["invoice"]
-        when = (f"<span class='badge'>{u['days_overdue']} día(s) de retraso</span>"
-                if u["days_overdue"] > 0
-                else f"<span class='muted'>Vence el {u['due_date']}</span>")
-        cards.append(
-            f"<div class='card'><div class='row'>"
-            f"<div><b>{html.escape(inv.invoice_number or '')}</b> — "
-            f"{html.escape(inv.client_name or '')}<br>{when}</div>"
-            f"<div class='total'>{_money(_totals(inv)[2])}</div></div>"
-            f"<div class='actions'>"
-            f"<form method='post' action='/receivables/{html.escape(inv.invoice_number)}/paid' "
-            f"style='display:inline'><button class='btn-primary'>Marcar cobrada</button></form>"
-            f"</div></div>"
+        if u["days_overdue"] > 0:
+            when = (f"<span class='badge badge-danger'>{u['days_overdue']} día(s) "
+                    f"de retraso</span>")
+        else:
+            when = f"<span class='muted'>vence el {u['due_date']}</span>"
+        button = ""
+        if may_manage:
+            button = (
+                f"<form method='post' action='/receivables/"
+                f"{html.escape(inv.invoice_number)}/paid'>"
+                f"<button class='btn-primary btn-sm'>Marcar cobrada</button></form>")
+        rows.append(
+            f"<tr><td class='strong'>{html.escape(inv.invoice_number or '')}</td>"
+            f"<td>{html.escape(inv.client_name or '')}</td>"
+            f"<td>{when}</td>"
+            f"<td class='num total'>{_money(_totals(inv)[2])}</td>"
+            f"<td><div class='actions'>{button}</div></td></tr>"
         )
-    if not cards:
-        cards.append("<div class='card'>Todo cobrado. 🎉</div>")
 
-    return _page("Cobros pendientes", head + "".join(cards), user)
+    table = (
+        "<div class='card'><div class='table-wrap'><table><thead><tr>"
+        "<th>Número</th><th>Cliente</th><th>Vencimiento</th>"
+        "<th class='num'>Importe</th><th></th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div></div>"
+    ) if rows else _empty("Todo cobrado", "No hay ninguna factura pendiente de cobro.")
+
+    return _page("Cobros pendientes", tiles + table, user,
+                 subtitle="Lo que te deben tus clientes",
+                 current="/receivables")
 
 
 @app.post("/receivables/{number}/paid")
