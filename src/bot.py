@@ -18,7 +18,7 @@ from src import (accounts, bills, conversation, finalize, notify, receipts, rect
                  store, telegram_access)
 from src.config_loader import get_config
 from src.invoice_generator import generate_invoice_pdf
-from src.parser import parse_invoice_from_transcript
+from src.parser import ParseError, parse_invoice_from_transcript
 from src.totals import compute_totals, format_money
 from src.transcription import transcribe_audio
 
@@ -658,6 +658,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         await _begin_invoice(update, status_msg, transcript, user)
 
+    except ParseError as exc:
+        # Already a sentence for the user ("la IA está saturada, prueba en un minuto").
+        await status_msg.edit_text(f"⚠️ {exc}")
     except Exception as exc:
         logger.error("Error processing the audio", exc_info=True)
         await status_msg.edit_text(
@@ -765,6 +768,9 @@ async def _begin_invoice(update, status_msg, text: str, user: dict) -> None:
     session = conversation.session_for(update.effective_chat.id)
     try:
         invoice = await asyncio.to_thread(parse_invoice_from_transcript, text)
+    except ParseError as exc:
+        await status_msg.edit_text(f"⚠️ {exc}")
+        return
     except Exception as exc:
         logger.error("Could not parse the invoice", exc_info=True)
         await status_msg.edit_text(

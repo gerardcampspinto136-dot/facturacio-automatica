@@ -1,6 +1,23 @@
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from datetime import date
+
+
+def round_money(value) -> float:
+    """Round to the cent the way an invoice does: half up, on the exact decimal value.
+
+    Python's round() works on binary floats, where 1255.50 x 21% is 263.654999...:
+    it gives 263.65 where every accountant writes 263.66. A cent off is enough for the
+    client's bookkeeping not to match the invoice.
+    """
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def percent_of(amount, rate) -> float:
+    """rate% of amount, computed in decimal and rounded to the cent."""
+    exact = Decimal(str(amount)) * Decimal(str(rate)) / Decimal(100)
+    return float(exact.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 @dataclass
@@ -12,7 +29,8 @@ class InvoiceItem:
 
     def __post_init__(self):
         if self.total == 0.0 and self.unit_price > 0:
-            self.total = round(self.quantity * self.unit_price, 2)
+            self.total = round_money(Decimal(str(self.quantity))
+                                     * Decimal(str(self.unit_price)))
 
 
 @dataclass
@@ -41,10 +59,13 @@ class InvoiceData:
     # the default later never rewrites an invoice already sent.
     tax_rate: Optional[float] = None
     irpf_rate: Optional[float] = None
+    # When the client has to pay by. Set when the invoice is issued, from the payment
+    # terms in force then, so a PDF rebuilt later still shows the same date.
+    due_date: Optional[date] = None
     # Stock moved when this invoice was issued, so the bot can report it in the chat.
     # Filled in by finalize_invoice; not part of the invoice document itself.
     stock_movements: list = field(default_factory=list)
 
     @property
     def subtotal(self) -> float:
-        return round(sum(item.total for item in self.items), 2)
+        return round_money(sum(Decimal(str(item.total)) for item in self.items))

@@ -37,7 +37,9 @@ logger = logging.getLogger(__name__)
 # The free tier does run out of capacity -- a 503 on one of these was seen in testing --
 # so a second model stands in rather than losing the photo the user just took.
 GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
-GROQ_VISION_FALLBACK = os.getenv("GROQ_VISION_FALLBACK", "qwen/qwen3.6-27b")
+# qwen3.6-27b used to stand in here, but Groq withdrew it (checked 2026-09-27): no other
+# model on the free key can read images. Set this if one appears; blank means none.
+GROQ_VISION_FALLBACK = os.getenv("GROQ_VISION_FALLBACK", "")
 ANTHROPIC_VISION_MODEL = os.getenv("ANTHROPIC_VISION_MODEL", "claude-sonnet-4-6")
 
 # Where the photographed originals are kept. A recorded expense without the document
@@ -344,6 +346,10 @@ def _complete_groq(b64: str, mime: str, hint: Optional[str]) -> str:
                     logger.info("%s refused JSON mode; retrying as plain text", model)
                     json_mode = False
                     continue
+                # A withdrawn model is not the photo's fault: move on to the next one.
+                if status == 404:
+                    last = exc
+                    break
                 # 4xx other than rate limiting means the request itself is wrong;
                 # retrying an unreadable image or a bad key just wastes the user's time.
                 if status is not None and 400 <= status < 500 and status != 429:

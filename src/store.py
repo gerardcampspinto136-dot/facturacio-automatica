@@ -116,6 +116,7 @@ def _row_to_invoice(conn, row) -> InvoiceData:
         contact_id=row["contact_id"],
         tax_rate=row["tax_rate"],
         irpf_rate=row["irpf_rate"],
+        due_date=date.fromisoformat(row["due_date"]) if row["due_date"] else None,
     )
 
 
@@ -349,13 +350,14 @@ def write_issued(conn, invoice: InvoiceData, number: str, *, token: Optional[str
         invoice_id = cur.lastrowid
 
     _write_items(conn, invoice_id, invoice)
+    invoice.due_date = inv_date + timedelta(days=due_days)
     conn.execute(
         "UPDATE invoices SET status = 'issued', number = ?, issued_at = ?, due_date = ? "
         "WHERE id = ?",
         (
             number,
             datetime.now().isoformat(timespec="seconds"),
-            (inv_date + timedelta(days=due_days)).isoformat(),
+            invoice.due_date.isoformat(),
             invoice_id,
         ),
     )

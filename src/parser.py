@@ -20,7 +20,14 @@ from src.models import InvoiceData, InvoiceItem
 
 # Groq's largest open model. 131k context, free tier, reliable with JSON mode.
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+# The free tier answers "over capacity" often enough that a dictation needs somewhere
+# else to go: the smaller sibling is usually free when the big one is not.
+GROQ_FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+
+
+class ParseError(Exception):
+    """A failure the user can act on, phrased for the chat rather than for a log."""
 
 _SYSTEM_PROMPT = """You are an invoice data extraction assistant. Given a voice transcription, extract all invoice-relevant information and return it as a single valid JSON object — nothing else, no explanation.
 
@@ -83,21 +90,81 @@ def _which_provider() -> str:
     )
 
 
+def _sleep(seconds: float) -> None:
+    """Indirection so the retry tests do not actually wait."""
+    import time
+
+    time.sleep(seconds)
+
+
+def _retry_after_seconds(exc: Exception):
+    """How long a rate limit says to wait, from its "try again in 8m27.1s" message."""
+    match = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", str(exc))
+    if not match:
+        return None
+    return int(match.group(1) or 0) * 60 + float(match.group(2))
+
+
+def with_retries(call, models, what: str = "leer el mensaje", attempts: int = 3):
+    """Run call(model) against each model in turn, riding out the free tier's hiccups.
+
+    Groq's free tier answers "503 over capacity" several times a day and rate-limits
+    with a 429. Neither means the request was wrong, so it is retried with a short
+    backoff, then tried on the next model. A 401/403 (bad key) is permanent and raised
+    at once; a 404 (the model was withdrawn -- it happens) moves straight on. When
+    everything fails the user gets a sentence, not a stack trace.
+    """
+    last: Exception | None = None
+    for model in [m for m in models if m]:
+        for attempt in range(attempts):
+            try:
+                return call(model)
+            except Exception as exc:
+                last = exc
+                status = getattr(exc, "status_code", None)
+                if status in (401, 403):
+                    raise
+                if status == 404:
+                    break
+                wait = _retry_after_seconds(exc)
+                if wait and wait > 30:
+                    break  # a long rate limit: not worth sitting through here
+                if status is not None and 400 <= status < 500 and status not in (400, 429):
+                    break
+                if attempt + 1 < attempts:
+                    _sleep(min(2 ** attempt * 2, 8))
+
+    wait = _retry_after_seconds(last) if last else None
+    if wait and wait > 30:
+        raise ParseError(
+            f"He agotado la cuota gratuita de la IA para {what}. Vuelve a intentarlo "
+            f"dentro de unos {max(1, round(wait / 60))} minutos."
+        ) from last
+    raise ParseError(
+        f"El servicio de IA está saturado y no he podido {what}. "
+        "Vuelve a mandármelo en un minuto."
+    ) from last
+
+
 def _complete_groq(transcript: str) -> str:
     from groq import Groq
 
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
-    response = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": transcript},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0,
-        max_tokens=1500,
-    )
-    return response.choices[0].message.content or ""
+
+    def call(model: str) -> str:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": transcript},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=1500,
+        )
+        return response.choices[0].message.content or ""
+
+    return with_retries(call, (GROQ_MODEL, GROQ_FALLBACK_MODEL), "leer la factura")
 
 
 def _complete_anthropic(transcript: str) -> str:

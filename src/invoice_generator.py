@@ -1,8 +1,10 @@
 import os
+from datetime import timedelta
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_RIGHT, TA_LEFT
+from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
@@ -18,6 +20,7 @@ from reportlab.platypus import (
 
 from src.config_loader import get_config
 from src.models import InvoiceData
+from src.totals import breakdown, rate_label, spanish_number
 
 # Brand colour used throughout the invoice
 BRAND_DARK = colors.HexColor("#1a3a5c")
@@ -31,6 +34,29 @@ def _style(name: str, **kwargs) -> ParagraphStyle:
     return ParagraphStyle(name, parent=base, **kwargs)
 
 
+def _t(value) -> str:
+    """Text for a Paragraph. ReportLab reads its input as markup, so a client called
+    "Pérez <Reformas>" used to lose "<Reformas>" -- silently -- and a stray "<b" could
+    stop the PDF being built at all, which stops the invoice being issued."""
+    return escape(str(value or ""))
+
+
+def _money(value: float) -> str:
+    """Amounts as a Spanish invoice writes them: 1.250,50 -- not 1,250.50."""
+    return spanish_number(value)
+
+
+def _qr_block(invoice: InvoiceData, config):
+    """The Verifactu QR for an issued invoice, or None (drafts, or the module absent)."""
+    if not invoice.invoice_number:
+        return None
+    try:
+        from src import verifactu
+    except ImportError:  # pragma: no cover - module added separately
+        return None
+    return verifactu.qr_flowable(invoice, config)
+
+
 def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
     config = get_config()
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -42,6 +68,8 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
         leftMargin=2 * cm,
         topMargin=2 * cm,
         bottomMargin=2 * cm,
+        title=f"Factura {invoice.invoice_number or 'borrador'}",
+        author=config.name,
     )
 
     elements = []
@@ -70,26 +98,40 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
         )
         elements.append(Spacer(1, 0.5 * cm))
 
+    if not invoice.invoice_number:
+        # A draft waiting for approval: it has no number yet, and must not pass for
+        # an invoice if it is forwarded.
+        elements.append(
+            Paragraph(
+                "BORRADOR — pendiente de aprobación, no es una factura",
+                _style("DraftBanner", fontSize=10, alignment=1,
+                       textColor=colors.HexColor("#8a5a00"),
+                       backColor=colors.HexColor("#fff4d6"), borderPadding=5),
+            )
+        )
+        elements.append(Spacer(1, 0.4 * cm))
+
     # ── Header: logo + company info ──────────────────────────────────────────
-    logo_logo_cell: object
+    logo_cell: object
     if config.logo_path and os.path.exists(config.logo_path):
-        logo_logo_cell = Image(config.logo_path, width=5 * cm, height=2.2 * cm, kind="proportional")
+        logo_cell = Image(config.logo_path, width=5 * cm, height=2.2 * cm, kind="proportional")
     else:
-        logo_logo_cell = Paragraph(
-            f"<b>{config.name}</b>",
+        logo_cell = Paragraph(
+            f"<b>{_t(config.name)}</b>",
             _style("LogoText", fontSize=18, textColor=BRAND_DARK),
         )
 
-    company_block = (
-        f"<b>{config.name}</b><br/>"
-        f"{config.address}<br/>"
-        f"Tel: {config.phone}<br/>"
-        f"CIF: {config.cif}<br/>"
-        f"{config.email}"
-    )
-    company_cell = Paragraph(company_block, _style("CompanyInfo", fontSize=9, alignment=TA_RIGHT, textColor=TEXT_MUTED))
+    company_lines = [f"<b>{_t(config.name)}</b>", _t(config.address)]
+    if config.phone:
+        company_lines.append(f"Tel: {_t(config.phone)}")
+    company_lines.append(f"NIF: {_t(config.cif)}")
+    if config.email:
+        company_lines.append(_t(config.email))
+    company_cell = Paragraph("<br/>".join(company_lines),
+                             _style("CompanyInfo", fontSize=9, alignment=TA_RIGHT,
+                                    textColor=TEXT_MUTED))
 
-    header_tbl = Table([[logo_logo_cell, company_cell]], colWidths=[9.5 * cm, 7.5 * cm])
+    header_tbl = Table([[logo_cell, company_cell]], colWidths=[9.5 * cm, 7.5 * cm])
     header_tbl.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
@@ -101,7 +143,7 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
     title_text = "FACTURA RECTIFICATIVA" if invoice.rectifies else "FACTURA"
     # A draft waiting for approval has no number yet -- it is assigned on approval so a
     # discarded draft leaves no gap -- and must not look like an issued invoice.
-    number_text = (f"N.º {invoice.invoice_number}" if invoice.invoice_number
+    number_text = (f"N.º {_t(invoice.invoice_number)}" if invoice.invoice_number
                    else "BORRADOR — sin número")
     title_row = Table(
         [[
@@ -119,35 +161,41 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
     if invoice.rectifies:
         elements.append(
             Paragraph(
-                f"Rectifica y anula la factura <b>{invoice.rectifies}</b>.",
+                f"Rectifica y anula la factura <b>{_t(invoice.rectifies)}</b>"
+                f"{_original_date(invoice.rectifies)}.",
                 _style("Rectifies", fontSize=9, textColor=TEXT_MUTED),
             )
         )
         elements.append(Spacer(1, 0.2 * cm))
 
-    # ── Client info + date ───────────────────────────────────────────────────
-    invoice_date = invoice.date.strftime("%d/%m/%Y")
+    # ── Client info + dates ──────────────────────────────────────────────────
     client_lines = [
         "<b>Facturar a:</b>",
-        f"<b>{invoice.client_name}</b>",
+        f"<b>{_t(invoice.client_name)}</b>",
     ]
     if invoice.client_address:
-        client_lines.append(invoice.client_address)
+        client_lines.append(_t(invoice.client_address))
     if invoice.client_id:
-        client_lines.append(f"NIF/CIF: {invoice.client_id}")
-    client_lines.append(invoice.client_email)
+        client_lines.append(f"NIF/CIF: {_t(invoice.client_id)}")
+    if invoice.client_email:
+        client_lines.append(_t(invoice.client_email))
+
+    date_lines = [f"<b>Fecha:</b> {invoice.date.strftime('%d/%m/%Y')}"]
+    if not invoice.rectifies:
+        due = invoice.due_date or (invoice.date + timedelta(days=config.payment_days))
+        date_lines.append(f"<b>Vencimiento:</b> {due.strftime('%d/%m/%Y')}")
+        date_lines.append(f"<b>Pago:</b> {_t(config.payment_terms)}")
 
     info_row = Table(
         [[
             Paragraph("<br/>".join(client_lines), _style("ClientInfo", fontSize=10, leading=16)),
-            Paragraph(
-                f"<b>Fecha:</b> {invoice_date}<br/><b>Pago:</b> {config.payment_terms}",
-                _style("DateInfo", fontSize=10, alignment=TA_RIGHT, leading=16),
-            ),
+            Paragraph("<br/>".join(date_lines),
+                      _style("DateInfo", fontSize=10, alignment=TA_RIGHT, leading=16)),
         ]],
         colWidths=[9.5 * cm, 7.5 * cm],
     )
     info_row.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("TOPPADDING", (0, 0), (-1, -1), 8),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 16),
     ]))
@@ -157,13 +205,16 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
     sym = config.currency_symbol
     col_widths = [9 * cm, 2 * cm, 3 * cm, 3 * cm]
     rows = [["Descripción", "Cant.", f"Precio unit. ({sym})", f"Total ({sym})"]]
+    # A description is a Paragraph so a long one wraps inside its column instead of
+    # running across the prices.
+    desc_style = _style("ItemDesc", fontSize=10, leading=13)
 
     for item in invoice.items:
         rows.append([
-            item.description,
-            f"{item.quantity:g}",
-            f"{item.unit_price:,.2f}",
-            f"{item.total:,.2f}",
+            Paragraph(_t(item.description), desc_style),
+            f"{item.quantity:g}".replace(".", ","),
+            _money(item.unit_price),
+            _money(item.total),
         ])
 
     items_tbl = Table(rows, colWidths=col_widths, repeatRows=1)
@@ -180,6 +231,7 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
         ("GRID", (0, 0), (-1, -1), 0.4, GREY_LINE),
         ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
         ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("TOPPADDING", (0, 0), (-1, -1), 7),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
@@ -189,44 +241,69 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
     elements.append(Spacer(1, 0.4 * cm))
 
     # ── Totals ───────────────────────────────────────────────────────────────
-    subtotal = invoice.subtotal
-    tax_amount = round(subtotal * config.tax_rate / 100, 2)
-    total = round(subtotal + tax_amount, 2)
-
+    t = breakdown(invoice, config)
     totals_data = [
-        ["", "Base imponible:", f"{subtotal:,.2f} {sym}"],
-        ["", f"IVA ({config.tax_rate}%):", f"{tax_amount:,.2f} {sym}"],
-        ["", "TOTAL:", f"{total:,.2f} {sym}"],
+        ["", "Base imponible:", f"{_money(t.base)} {sym}"],
+        ["", f"IVA ({rate_label(t.tax_rate)}%):", f"{_money(t.tax)} {sym}"],
     ]
-    totals_tbl = Table(totals_data, colWidths=[10.5 * cm, 4 * cm, 2.5 * cm])
+    if t.irpf:
+        totals_data.append(["", f"Retención IRPF ({rate_label(t.irpf_rate)}%):",
+                            f"−{_money(t.irpf)} {sym}"])
+    totals_data.append(["", "TOTAL A PAGAR:" if t.irpf else "TOTAL:",
+                        f"{_money(t.total)} {sym}"])
+    last = len(totals_data) - 1
+
+    totals_tbl = Table(totals_data, colWidths=[9.5 * cm, 4.5 * cm, 3 * cm])
     totals_tbl.setStyle(TableStyle([
         ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-        ("FONTNAME", (0, 0), (-1, 1), "Helvetica"),
-        ("FONTNAME", (0, 2), (-1, 2), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 1), 10),
-        ("FONTSIZE", (0, 2), (-1, 2), 12),
-        ("TEXTCOLOR", (0, 2), (-1, 2), BRAND_DARK),
-        ("LINEABOVE", (1, 2), (-1, 2), 1.5, BRAND_DARK),
-        ("TOPPADDING", (0, 2), (-1, 2), 10),
+        ("FONTNAME", (0, 0), (-1, last - 1), "Helvetica"),
+        ("FONTNAME", (0, last), (-1, last), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, last - 1), 10),
+        ("FONTSIZE", (0, last), (-1, last), 12),
+        ("TEXTCOLOR", (0, last), (-1, last), BRAND_DARK),
+        ("LINEABOVE", (1, last), (-1, last), 1.5, BRAND_DARK),
+        ("TOPPADDING", (0, last), (-1, last), 10),
     ]))
     elements.append(totals_tbl)
 
     # ── Notes ────────────────────────────────────────────────────────────────
     if invoice.notes:
         elements.append(Spacer(1, 0.6 * cm))
-        elements.append(Paragraph(f"<b>Notas:</b> {invoice.notes}", _style("Notes", fontSize=9, textColor=TEXT_MUTED)))
+        elements.append(Paragraph(f"<b>Notas:</b> {_t(invoice.notes)}",
+                                  _style("Notes", fontSize=9, textColor=TEXT_MUTED)))
+
+    # ── Verifactu QR ─────────────────────────────────────────────────────────
+    qr = _qr_block(invoice, config)
+    if qr is not None:
+        elements.append(Spacer(1, 0.6 * cm))
+        elements.append(qr)
 
     # ── Bank account ─────────────────────────────────────────────────────────
-    if config.bank_account:
-        elements.append(Spacer(1, 1 * cm))
+    if config.bank_account and not invoice.rectifies:
+        elements.append(Spacer(1, 0.8 * cm))
         elements.append(HRFlowable(width="100%", thickness=0.5, color=GREY_LINE))
         elements.append(Spacer(1, 0.3 * cm))
         elements.append(
             Paragraph(
-                f"Datos bancarios: {config.bank_account}",
+                f"Pago por transferencia a la cuenta IBAN {_t(config.bank_account)}"
+                + (f" · Referencia: {_t(invoice.invoice_number)}"
+                   if invoice.invoice_number else ""),
                 _style("Bank", fontSize=8, textColor=TEXT_MUTED),
             )
         )
 
     doc.build(elements)
     return output_path
+
+
+def _original_date(number: str) -> str:
+    """" de fecha dd/mm/yyyy" for the invoice being rectified, when it can be found."""
+    try:
+        from src import store
+
+        record = store.get_issued(number)
+    except Exception:
+        return ""
+    if not record:
+        return ""
+    return f" de fecha {record['invoice'].date.strftime('%d/%m/%Y')}"

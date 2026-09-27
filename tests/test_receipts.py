@@ -455,6 +455,33 @@ def groq_env(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     monkeypatch.setattr(receipts, "_sleep", lambda _s: None)
     monkeypatch.setattr("groq.Groq", lambda **_kw: object())
+    # None is configured by default any more (Groq withdrew the old one); these tests
+    # are about what happens when one is.
+    monkeypatch.setattr(receipts, "GROQ_VISION_FALLBACK", "some/vision-fallback")
+
+
+class _Withdrawn(Exception):
+    status_code = 404
+
+
+def test_a_withdrawn_model_still_ends_in_a_sentence_not_a_crash(groq_env, monkeypatch):
+    """Groq withdrew qwen3.6-27b; a 404 must not surface as a stack trace."""
+    monkeypatch.setattr(
+        receipts, "_groq_once",
+        lambda *_a, **_kw: (_ for _ in ()).throw(_Withdrawn("model not found")),
+    )
+    with pytest.raises(receipts.ReceiptError):
+        receipts._complete_groq("x", "image/png", None)
+
+
+def test_a_withdrawn_primary_moves_on_to_the_fallback(groq_env, monkeypatch):
+    def gone_then_ok(_client, model, *_args, **_kw):
+        if model == receipts.GROQ_VISION_MODEL:
+            raise _Withdrawn("model not found")
+        return '{"supplier_name": "Puig", "total": 10}'
+
+    monkeypatch.setattr(receipts, "_groq_once", gone_then_ok)
+    assert "Puig" in receipts._complete_groq("x", "image/png", None)
 
 
 def test_a_busy_model_is_retried_and_then_succeeds(groq_env, monkeypatch):

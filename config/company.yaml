@@ -69,6 +69,9 @@ review:
 #  Se envían por los mismos canales que review.notify.channels.
 # ============================================================
 alerts:
+  # A qué hora salen los avisos (nunca después de las 21:00). Si el ordenador estaba
+  # apagado a esa hora, salen en cuanto se encienda.
+  hour: 9
   # Resumen de pagos a proveedores + facturas sin cobrar.
   # Vacío ("") para desactivarlo. Formatos: 1d, 3d, 1w, 2w.
   money_schedule: "1w"

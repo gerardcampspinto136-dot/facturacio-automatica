@@ -26,9 +26,9 @@ invoice, so it does not touch the VAT; it only lowers what the client transfers.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from decimal import Decimal
 
-from src.models import InvoiceData
+from src.models import InvoiceData, percent_of, round_money
 
 
 def _config(config):
@@ -70,20 +70,27 @@ class Totals:
 
 
 def breakdown(invoice: InvoiceData, config=None) -> Totals:
-    """Everything an invoice adds up to, for an invoice holding net line prices."""
+    """Everything an invoice adds up to, for an invoice holding net line prices.
+
+    Each amount is rounded to the cent half-up on its exact decimal value, as a Spanish
+    invoice is, and the totals are sums of the rounded parts -- so the lines printed on
+    the PDF always add up to the total printed under them.
+    """
     config = _config(config)
     base = invoice.subtotal
     t_rate = vat_rate(invoice, config)
     i_rate = irpf_rate(invoice, config)
-    tax = round(base * t_rate / 100, 2)
-    irpf = round(base * i_rate / 100, 2)
-    gross = round(base + tax, 2)
-    return Totals(base, t_rate, tax, i_rate, irpf, gross, round(gross - irpf, 2))
+    tax = percent_of(base, t_rate)
+    irpf = percent_of(base, i_rate)
+    gross = round_money(Decimal(str(base)) + Decimal(str(tax)))
+    total = round_money(Decimal(str(gross)) - Decimal(str(irpf)))
+    return Totals(base, t_rate, tax, i_rate, irpf, gross, total)
 
 
 def net_from_gross(gross: float, tax_rate: float) -> float:
     """Strip VAT out of a VAT-inclusive amount."""
-    return round(gross / (1 + tax_rate / 100), 2)
+    exact = Decimal(str(gross)) * 100 / (100 + Decimal(str(tax_rate)))
+    return round_money(exact)
 
 
 def compute_totals(invoice: InvoiceData, config=None) -> tuple[float, float, float]:
@@ -123,23 +130,25 @@ def normalize_prices(invoice: InvoiceData, config=None) -> InvoiceData:
         return invoice
 
     rate = vat_rate(invoice, config)
-    gross_total = round(sum(item.total for item in invoice.items), 2)
+    gross_total = round_money(sum(Decimal(str(item.total)) for item in invoice.items))
+
+    def unit(item) -> float:
+        if not item.quantity:
+            return item.total
+        return round_money(Decimal(str(item.total)) / Decimal(str(item.quantity)))
 
     for item in invoice.items:
         item.total = net_from_gross(item.total, rate)
-        item.unit_price = (
-            round(item.total / item.quantity, 2) if item.quantity else item.total
-        )
+        item.unit_price = unit(item)
 
     # Push the rounding difference into the last line so the gross total is exact.
     target_net = net_from_gross(gross_total, rate)
-    drift = round(target_net - sum(i.total for i in invoice.items), 2)
+    drift = round_money(Decimal(str(target_net))
+                        - sum(Decimal(str(i.total)) for i in invoice.items))
     if drift and invoice.items:
         last = invoice.items[-1]
-        last.total = round(last.total + drift, 2)
-        last.unit_price = (
-            round(last.total / last.quantity, 2) if last.quantity else last.total
-        )
+        last.total = round_money(Decimal(str(last.total)) + Decimal(str(drift)))
+        last.unit_price = unit(last)
 
     return invoice
 

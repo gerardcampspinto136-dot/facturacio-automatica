@@ -109,6 +109,8 @@ class CompanyConfig:
         self.money_schedule = alerts.get("money_schedule", "1w") or ""
         self.stock_schedule = alerts.get("stock_schedule", "1w") or ""
         self.bills_due_within_days = int(alerts.get("bills_due_within_days", 7))
+        # The hour of the morning the reminders go out (never after 21:00).
+        self.alert_hour = min(max(int(alerts.get("hour", 9) or 9), 0), 20)
 
         web = review.get("web", {}) or {}
         self.web_base_url = str(web.get("base_url", "http://localhost:8000")).rstrip("/")

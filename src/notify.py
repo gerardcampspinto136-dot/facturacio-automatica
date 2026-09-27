@@ -136,15 +136,23 @@ def build_money_digest(bills_due: list, unpaid_invoices: list,
             lines.append(f"  … y {len(bills_due) - 10} más")
 
     if unpaid_invoices:
+        from src.totals import compute_totals
+
+        def owed(record) -> float:
+            # What the client actually has to transfer: VAT included, IRPF withheld.
+            # This used to add up the net line totals, so a 121 € invoice was
+            # reported as 100 € owed -- every receivable understated by the VAT.
+            return compute_totals(record["invoice"])[2]
+
         if lines:
             lines.append("")
         overdue = [i for i in unpaid_invoices if i["days_overdue"] > 0]
-        total = sum(sum(it.total for it in i["invoice"].items) for i in unpaid_invoices)
+        total = sum(owed(i) for i in unpaid_invoices)
         lines.append(f"📥 FACTURAS SIN COBRAR — {_money(total)}")
         if overdue:
             lines.append(f"  {len(overdue)} de ellas ya vencidas:")
             for inv in overdue[:10]:
-                amount = sum(it.total for it in inv["invoice"].items)
+                amount = owed(inv)
                 lines.append(
                     f"  • {inv['invoice'].invoice_number} — {inv['invoice'].client_name}: "
                     f"{_money(amount)}, {inv['days_overdue']} día(s) de retraso"
