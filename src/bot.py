@@ -518,6 +518,90 @@ def _resend_button(result) -> list:
     return [("🔁 Reintentar el envío", f"resend:{result.number}")]
 
 
+def _after_issue_buttons(result) -> list:
+    """Under a freshly issued invoice: retry the email if it failed, and make it monthly."""
+    buttons = _resend_button(result)
+    if not result.invoice.rectifies:
+        buttons.append(("🔁 Repetir cada mes", f"rec:new:{result.number}"))
+    return buttons
+
+
+async def cmd_recurrentes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The invoices that repeat, each with its buttons."""
+    from src import recurring
+
+    user = await _gate(update, "invoices.view")
+    if user is None:
+        return
+    templates = recurring.list_active()
+    if not templates:
+        await update.message.reply_text(
+            "No tienes facturas recurrentes. Para crear una, emite la factura normal y "
+            "pulsa «🔁 Repetir cada mes» debajo de ella.")
+        return
+    can_manage = accounts.can(user, "invoices.approve")
+    for template in templates:
+        buttons = []
+        if can_manage:
+            buttons = [[
+                ("⏸ Que no se envíe sola" if template["auto_send"] else "📤 Que se envíe sola",
+                 f"rec:{'manual' if template['auto_send'] else 'auto'}:{template['id']}"),
+                ("🗑 Cancelar", f"rec:del:{template['id']}"),
+            ]]
+        await update.message.reply_text(f"🔁 {recurring.describe(template)}",
+                                        reply_markup=_keyboard(buttons))
+
+
+async def _on_recurring_button(update: Update, action: str, ref: str) -> None:
+    from src import recurring
+
+    query = update.callback_query
+    user = await _gate(update, "invoices.approve")
+    if user is None:
+        return
+    await query.edit_message_reply_markup(reply_markup=None)
+
+    if action == "new":
+        record = store.get_issued(ref)
+        if record is None:
+            await query.message.reply_text(f"No encuentro la factura {ref}.")
+            return
+        template_id = recurring.create_from_invoice(
+            record["invoice"], recurring.MONTHLY, created_by=user.get("id"),
+            created_chat_id=update.effective_chat.id)
+        template = recurring.get(template_id)
+        day = date_from_iso(template["next_date"]).strftime("%d/%m/%Y")
+        await query.message.reply_text(
+            f"🔁 Hecho. El día {template['day_of_month']} de cada mes te preparo esta "
+            f"factura para {template['client_name']} y te la mando aquí para aprobarla "
+            f"con un toque. La primera, el {day}.",
+            reply_markup=_keyboard([[("📤 Que se envíe sola", f"rec:auto:{template_id}"),
+                                     ("🗑 Deshacer", f"rec:del:{template_id}")]]))
+        return
+
+    try:
+        template_id = int(ref)
+    except ValueError:
+        return
+    if action == "auto":
+        recurring.set_auto_send(template_id, True)
+        await query.message.reply_text(
+            "📤 Vale: se emitirá y se enviará sola cada vez, y te aviso de que ha salido.")
+    elif action == "manual":
+        recurring.set_auto_send(template_id, False)
+        await query.message.reply_text(
+            "⏸ Vale: cada vez te la prepararé para que la apruebes antes de enviarla.")
+    elif action == "del":
+        recurring.cancel(template_id)
+        await query.message.reply_text("🗑 Factura recurrente cancelada. No se repetirá más.")
+
+
+def date_from_iso(value: str):
+    from datetime import date
+
+    return date.fromisoformat(value)
+
+
 async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/anular <número> [motivo]: cancel an issued invoice with a rectifying one."""
     if await _gate(update, "invoices.rectify") is None:
@@ -970,7 +1054,7 @@ async def _approve(update, session, user: dict) -> None:
                     f"Total: {format_money(total, config)}\n"
                     f"{result.email_status}{stock_note}{saved_note}"
                 ),
-                reply_markup=_keyboard(_resend_button(result)),
+                reply_markup=_keyboard(_after_issue_buttons(result)),
             )
         await status.delete()
     except Exception as exc:
@@ -1149,6 +1233,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _on_pending_button(update, action, token)
         return
 
+    if data.startswith("rec:"):
+        _, action, ref = (data.split(":", 2) + ["", ""])[:3]
+        await _on_recurring_button(update, action, ref)
+        return
+
     if data.startswith("dun:"):
         _, action, number = (data.split(":", 2) + ["", ""])[:3]
         await _on_dunning_button(update, action, number)
@@ -1304,6 +1393,7 @@ _MENU = [
     ("ayuda", "Cómo hablarme y ejemplos"),
     ("pendientes", "Facturas esperando aprobación"),
     ("factura", "El PDF de una factura emitida"),
+    ("recurrentes", "Facturas que se repiten cada mes"),
     ("cobrada", "Marcar una factura como cobrada"),
     ("trimestre", "IVA e IRPF del trimestre, y el paquete para el gestor"),
     ("pagos", "Qué debes y qué te deben"),
@@ -1345,6 +1435,7 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("cobrada", cmd_cobrada))
     app.add_handler(CommandHandler("cobradas", cmd_cobrada))
     app.add_handler(CommandHandler("recordar", cmd_recordar))
+    app.add_handler(CommandHandler("recurrentes", cmd_recurrentes))
     app.add_handler(CommandHandler("impuestos", cmd_trimestre))
     app.add_handler(CommandHandler("anular", cmd_anular))
     app.add_handler(CommandHandler("gasto", cmd_gasto))

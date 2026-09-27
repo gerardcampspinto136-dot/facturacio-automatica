@@ -56,11 +56,13 @@ def send_pending_reminder(count: int, url: str) -> None:
 
 # ── Approval requests ────────────────────────────────────────────────────────
 
-def request_approval(token: str, exclude_chat: Optional[int] = None) -> int:
+def request_approval(token: str, exclude_chat: Optional[int] = None,
+                     intro: Optional[str] = None) -> int:
     """Put a waiting draft in front of everyone who may approve it, with the buttons.
 
     The approver gets the draft PDF itself, so approving is a look and a tap from the
     phone rather than a trip to the office computer. Returns how many chats were told.
+    `intro` replaces the opening line ("Pepe ha preparado una factura...").
     """
     from src import store, telegram_access, telegram_api
     from src.totals import compute_totals, format_money
@@ -74,7 +76,7 @@ def request_approval(token: str, exclude_chat: Optional[int] = None) -> int:
 
     who = pending.get("created_by_name") or "Alguien del equipo"
     caption = (
-        f"🧾 {who} ha preparado una factura y espera tu aprobación.\n\n"
+        (intro or f"🧾 {who} ha preparado una factura y espera tu aprobación.") + "\n\n"
         f"Cliente: {invoice.client_name}\n"
         f"Total: {format_money(total, config)}\n"
         f"Se enviará a: {invoice.client_email or '(sin email: no se enviará)'}"

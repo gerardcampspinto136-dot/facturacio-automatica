@@ -448,6 +448,7 @@ _NAV = (
         (None, "/", "◎", "Inicio"),
         ("invoices.view", "/pending", "◷", "Pendientes"),
         ("invoices.view", "/issued", "▤", "Emitidas"),
+        ("invoices.view", "/recurring", "↻", "Recurrentes"),
         ("receivables.view", "/receivables", "↓", "Cobros"),
     )),
     ("Gastos", (
@@ -1037,6 +1038,103 @@ async def issued_resend(request: Request, number: str):
                      "<div class='actions'><a class='btn btn-neutral' href='/issued'>"
                      "Volver</a></div></div>", user)
     return RedirectResponse("/issued", status_code=303)
+
+
+# ── Recurring invoices ───────────────────────────────────────────────────────
+
+@app.get("/recurring", response_class=HTMLResponse)
+async def recurring_page(request: Request):
+    from src import recurring
+
+    user, refusal = _guard(request, "invoices.view")
+    if refusal:
+        return refusal
+    may_manage = accounts.can(user, "invoices.approve")
+    templates = recurring.list_active()
+
+    rows = []
+    for t in templates:
+        invoice = recurring.invoice_for(t, date.today())
+        how = ("<span class='badge badge-warn'>se envía sola</span>" if t["auto_send"]
+               else "<span class='badge'>se prepara para aprobar</span>")
+        actions = ""
+        if may_manage:
+            flip = "manual" if t["auto_send"] else "auto"
+            actions = (
+                f"<form method='post' action='/recurring/{t['id']}/{flip}'>"
+                f"<button class='btn-neutral btn-sm'>"
+                f"{'Prepararla para aprobar' if t['auto_send'] else 'Que se envíe sola'}"
+                f"</button></form>"
+                f"<form method='post' action='/recurring/{t['id']}/cancel' "
+                f"onsubmit=\"return confirm('¿Cancelar esta factura recurrente?')\">"
+                f"<button class='btn-neutral btn-sm'>Cancelar</button></form>")
+        rows.append(
+            f"<tr><td class='strong'>{html.escape(t['client_name'])}"
+            f"<div class='muted'>{html.escape(recurring.FREQUENCIES[t['frequency']][0])}"
+            f" · desde {html.escape(t['source_number'] or '')}</div></td>"
+            f"<td class='muted'>{date.fromisoformat(t['next_date']).strftime('%d/%m/%Y')}"
+            f"</td><td>{how}</td>"
+            f"<td class='num total'>{_money(_totals(invoice)[2])}</td>"
+            f"<td><div class='actions'>{actions}</div></td></tr>")
+
+    table = ("<div class='card'><div class='table-wrap'><table><thead><tr>"
+             "<th>Cliente</th><th>Próxima</th><th>Cómo</th><th class='num'>Importe</th>"
+             f"<th></th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></div>"
+             if rows else _empty("No hay facturas recurrentes",
+                                  "Emite la factura una vez y pulsa «Repetir cada mes» "
+                                  "debajo de ella en Telegram, o créala aquí."))
+
+    form = ""
+    if may_manage:
+        form = (
+            "<div class='card'><div class='card-title'>Repetir una factura</div>"
+            "<div class='card-hint'>Cuotas de mantenimiento, alquileres, igualas: se "
+            "emite una vez y se repite sola.</div>"
+            "<form method='post' action='/recurring/new' class='billform'>"
+            "<input name='number' placeholder='Nº de factura, p. ej. 2026-0007' required>"
+            "<select name='frequency' style='width:auto'>"
+            "<option value='monthly'>cada mes</option>"
+            "<option value='quarterly'>cada trimestre</option>"
+            "<option value='yearly'>cada año</option></select>"
+            "<button class='btn-primary'>Crear</button></form></div>")
+
+    return _page("Facturas recurrentes", form + table, user,
+                 subtitle="Las que se repiten solas: te las preparo o se envían",
+                 current="/recurring")
+
+
+@app.post("/recurring/new")
+async def recurring_new(request: Request):
+    from src import recurring
+
+    user, refusal = _guard(request, "invoices.approve")
+    if refusal:
+        return refusal
+    form = await request.form()
+    number = (form.get("number") or "").strip()
+    frequency = form.get("frequency") or recurring.MONTHLY
+    record = store.get_issued(number)
+    if record is None or record["invoice"].rectifies or frequency not in recurring.FREQUENCIES:
+        return _page("No se pudo crear",
+                     f"<div class='card'>No encuentro la factura «{html.escape(number)}»."
+                     "<div class='actions'><a class='btn btn-neutral' href='/recurring'>"
+                     "Volver</a></div></div>", user)
+    recurring.create_from_invoice(record["invoice"], frequency, created_by=user.get("id"))
+    return RedirectResponse("/recurring", status_code=303)
+
+
+@app.post("/recurring/{template_id}/{action}")
+async def recurring_action(request: Request, template_id: int, action: str):
+    from src import recurring
+
+    _user_, refusal = _guard(request, "invoices.approve")
+    if refusal:
+        return refusal
+    if action == "cancel":
+        recurring.cancel(template_id)
+    elif action in ("auto", "manual"):
+        recurring.set_auto_send(template_id, action == "auto")
+    return RedirectResponse("/recurring", status_code=303)
 
 
 # ── Taxes and the gestor ─────────────────────────────────────────────────────

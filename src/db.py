@@ -189,6 +189,34 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 
+-- Invoices that repeat: a maintenance fee, a rent, a monthly retainer. Each row is a
+-- template; on its date it becomes a real invoice -- prepared for approval, or sent
+-- on its own if the company chose that. Line prices are stored net.
+CREATE TABLE IF NOT EXISTS recurring_invoices (
+    id             INTEGER PRIMARY KEY,
+    contact_id     INTEGER REFERENCES contacts (id) ON DELETE SET NULL,
+    client_name    TEXT NOT NULL,
+    client_email   TEXT,
+    client_address TEXT,
+    client_id      TEXT,
+    items_json     TEXT NOT NULL,
+    notes          TEXT,
+    tax_rate       REAL,
+    irpf_rate      REAL,
+    frequency      TEXT NOT NULL CHECK (frequency IN ('monthly', 'quarterly', 'yearly')),
+    day_of_month   INTEGER NOT NULL,
+    next_date      TEXT NOT NULL,
+    auto_send      INTEGER NOT NULL DEFAULT 0,
+    active         INTEGER NOT NULL DEFAULT 1,
+    created_by     INTEGER,
+    created_chat_id INTEGER,
+    last_run_at    TEXT,
+    last_number    TEXT,
+    source_number  TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_recurring_due ON recurring_invoices (active, next_date);
+
 -- The Verifactu register (see src/verifactu.py): one record per invoice issued, each
 -- fingerprinted together with the one before it. The values are stored exactly as they
 -- were hashed -- as text -- so the chain can be re-verified at any time.
