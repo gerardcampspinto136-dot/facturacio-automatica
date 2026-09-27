@@ -882,7 +882,9 @@ async def _send(target, replies) -> None:
 # ── Dictating an invoice ─────────────────────────────────────────────────────
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = await _gate(update, "invoices.create")
+    # Any known user: a voice note may be a question or an expense as well as an
+    # invoice, and each checks its own permission once it is understood.
+    user = await _gate(update)
     if user is None:
         return
 
@@ -904,7 +906,23 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"Transcripción:\n_{_md(transcript)}_\n\nExtrayendo datos...",
             parse_mode="Markdown",
         )
-        await _begin_invoice(update, status_msg, transcript, user)
+        # Mid-invoice or mid-expense, a voice note answers the question that was asked;
+        # otherwise it is a new request to sort.
+        expense = receipts.session_for(update.effective_chat.id)
+        if expense.active and accounts.can(user, "bills.manage"):
+            await status_msg.delete()
+            await _send(update.message, expense.handle_text(transcript))
+            return
+        session = conversation.session_for(update.effective_chat.id)
+        if session.active and accounts.can(user, "invoices.create"):
+            await status_msg.delete()
+            if (session.awaiting == conversation.AWAIT_CONFIRM
+                    and conversation.says_yes(transcript)):
+                await _approve(update, session, user)
+            else:
+                await _send(update.message, session.handle_text(transcript))
+            return
+        await _handle_request(update, status_msg, transcript, user)
 
     except ParseError as exc:
         # Already a sentence for the user ("la IA está saturada, prueba en un minuto").
@@ -994,21 +1012,80 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _send(update.message, expense.handle_text(text))
         return
 
-    user = await _gate(update, "invoices.create")
-    if user is None:
-        return
-
     session = conversation.session_for(update.effective_chat.id)
 
     if session.active:
+        user = await _gate(update, "invoices.create")
+        if user is None:
+            return
         if session.awaiting == conversation.AWAIT_CONFIRM and conversation.says_yes(text):
             await _approve(update, session, user)
             return
         await _send(update.message, session.handle_text(text))
         return
 
-    status_msg = await update.message.reply_text("Leyendo los datos de la factura...")
-    await _begin_invoice(update, status_msg, text, user)
+    # A fresh message may be an invoice, an expense or a question: anyone the bot
+    # knows may send one, and each kind checks its own permission once sorted.
+    user = await _gate(update)
+    if user is None:
+        return
+    status_msg = await update.message.reply_text("Un momento...")
+    await _handle_request(update, status_msg, text, user)
+
+
+_NOT_SURE = ("No sé si quieres hacer una factura, anotar un gasto o preguntarme algo. "
+             "Por ejemplo:\n"
+             "• «Factura para Talleres Puig, 300 euros más IVA»\n"
+             "• «He pagado 45 euros de gasolina en Repsol»\n"
+             "• «¿Cuánto he facturado este mes?»")
+
+
+async def _handle_request(update, status_msg, text: str, user: dict) -> None:
+    """Sort a fresh message -- invoice, quote, expense or question -- and deal with it."""
+    from src import answers, assistant
+
+    kind = assistant.quick_intent(text)
+    routed: dict = {}
+    if kind is None:
+        try:
+            routed = await asyncio.to_thread(assistant.route, text)
+        except ParseError as exc:
+            await status_msg.edit_text(f"⚠️ {exc}")
+            return
+        except Exception:
+            # The router failing must not stop the invoice the bot has always taken.
+            logger.error("Could not sort the message; treating it as an invoice",
+                         exc_info=True)
+            routed = {"intent": "invoice"}
+        kind = routed["intent"]
+
+    if kind in ("invoice", "quote"):
+        if not accounts.can(user, "invoices.create"):
+            await status_msg.edit_text(
+                "No tienes permiso para hacer facturas (te falta: «Crear facturas»).")
+            return
+        await _begin_invoice(update, status_msg, text, user)
+        return
+
+    if kind == "expense":
+        if not accounts.can(user, "bills.manage"):
+            await status_msg.edit_text(
+                "No tienes permiso para anotar gastos (te falta: «Anotar, pagar y borrar "
+                "gastos»).")
+            return
+        receipt = assistant.expense_receipt(routed)
+        conversation.clear(update.effective_chat.id)
+        replies = receipts.session_for(update.effective_chat.id).start(receipt)
+        await status_msg.delete()
+        await _send(update.message, replies)
+        return
+
+    if kind == "question":
+        reply = await asyncio.to_thread(answers.answer, routed, user)
+        await status_msg.edit_text(reply)
+        return
+
+    await status_msg.edit_text(_NOT_SURE)
 
 
 async def _begin_invoice(update, status_msg, text: str, user: dict) -> None:
