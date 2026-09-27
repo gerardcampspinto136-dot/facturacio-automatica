@@ -59,6 +59,8 @@ class InvoiceData:
     # the default later never rewrites an invoice already sent.
     tax_rate: Optional[float] = None
     irpf_rate: Optional[float] = None
+    # Why an invoice at 0% carries no VAT: a key of src/exemptions.REASONS.
+    vat_reason: Optional[str] = None
     # When the client has to pay by. Set when the invoice is issued, from the payment
     # terms in force then, so a PDF rebuilt later still shows the same date.
     due_date: Optional[date] = None

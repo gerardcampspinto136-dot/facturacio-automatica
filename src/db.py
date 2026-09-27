@@ -387,6 +387,14 @@ _ADDED_COLUMNS = {
         ("reminders_paused", "INTEGER NOT NULL DEFAULT 0"),
         # The quote this invoice came from, if any.
         ("quote_number", "TEXT"),
+        # Why it carries no VAT, when it carries none (src/exemptions.py).
+        ("vat_reason", "TEXT"),
+    ],
+    "quotes": [
+        ("vat_reason", "TEXT"),
+    ],
+    "recurring_invoices": [
+        ("vat_reason", "TEXT"),
     ],
     # Everything the admin panel needs to set up a client without editing YAML. Added
     # here rather than in CREATE TABLE so an installation that already has companies
@@ -410,11 +418,17 @@ _ADDED_COLUMNS = {
         ("gestor_email", "TEXT"),
         # ask / auto / off: how overdue invoices are chased.
         ("collections_mode", "TEXT"),
+        # A business whose own activity is VAT-exempt (an academy, a physiotherapist):
+        # the reason printed on its invoices at 0%.
+        ("vat_reason", "TEXT"),
     ],
     # What was agreed with each client and should not have to be said twice: whether
     # their invoices carry an IRPF withholding (NULL = the company default).
     "contacts": [
         ("irpf_rate", "REAL"),
+        # A client whose invoices never carry VAT (another EU country's company, say),
+        # and why: a key of src/exemptions.REASONS.
+        ("vat_reason", "TEXT"),
         # A public body invoiced through FACe is addressed by three DIR3 codes: its
         # accounting office, managing body and processing unit.
         ("dir3_accounting", "TEXT"),
@@ -449,6 +463,14 @@ CREATE TRIGGER IF NOT EXISTS trg_issued_invoice_frozen
 BEFORE UPDATE OF number, status, client_name, client_email, client_address, client_id,
                  date, notes, rectifies, prices_include_tax, tax_rate, irpf_rate
 ON invoices WHEN OLD.status = 'issued'
+BEGIN
+    SELECT RAISE(ABORT, 'Una factura emitida no se puede modificar: emite una rectificativa.');
+END;
+
+-- Columns added after the trigger above was first created (an existing database keeps
+-- its original trigger, so later columns get one of their own).
+CREATE TRIGGER IF NOT EXISTS trg_issued_invoice_frozen_2
+BEFORE UPDATE OF vat_reason ON invoices WHEN OLD.status = 'issued'
 BEGIN
     SELECT RAISE(ABORT, 'Una factura emitida no se puede modificar: emite una rectificativa.');
 END;

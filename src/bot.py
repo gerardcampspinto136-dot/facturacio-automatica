@@ -1755,6 +1755,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _send(query.message, session.toggle_tax())
         return
 
+    if data == "vat0":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await _send(query.message, session.drop_vat())
+        return
+
+    if data.startswith("vatwhy:"):
+        await query.edit_message_reply_markup(reply_markup=None)
+        key = data.split(":", 1)[1]
+        await _send(query.message, session.ask_vat_reason() if key == "ask"
+                    else session.choose_vat_reason(key))
+        return
+
     if data == "toggle_irpf":
         await query.edit_message_reply_markup(reply_markup=None)
         await _send(query.message, session.toggle_irpf())

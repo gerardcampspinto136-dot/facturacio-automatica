@@ -15,7 +15,7 @@ import html
 from fastapi import Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from src import accounts
+from src import accounts, exemptions
 from src.web.app import _empty, _guard, _page, app
 
 
@@ -643,8 +643,16 @@ async def company_settings(request: Request, company_id: int):
         + "</div>"
 
         "<div class='card'><b>Facturación</b>"
-        + _field("IVA por defecto (%)", "tax_rate", company.get("tax_rate") or 21,
-                 "21, 10 o 4", "number")
+        # 0 is a real rate (an exempt activity), not "unset": `or 21` turned it into 21.
+        + _field("IVA por defecto (%)", "tax_rate",
+                 21 if company.get("tax_rate") is None else f"{company['tax_rate']:g}",
+                 "21, 10 o 4 · 0 si la actividad está exenta", "number")
+        + "<label>Si factura sin IVA, el motivo <span class='muted'>— sale impreso en "
+          "la factura, es obligatorio</span></label>"
+        + "<select name='vat_reason' style='width:100%;padding:8px'>"
+        + exemptions.options_html(company.get("vat_reason"),
+                                  "— Se pregunta en cada factura sin IVA")
+        + "</select>"
         + _field("Retención de IRPF por defecto (%)", "irpf_rate",
                  company.get("irpf_rate") or 0,
                  "0 si no aplica · 15 profesionales · 7 los primeros años", "number")
@@ -743,6 +751,8 @@ async def company_settings_save(request: Request, company_id: int):
         values.pop("review_mode", None)
     if values.get("collections_mode") not in ("ask", "auto", "off"):
         values.pop("collections_mode", None)
+    if "vat_reason" in values and not exemptions.get(values["vat_reason"]):
+        values["vat_reason"] = ""       # blank clears it; anything unknown too
     if "invoice_series" in values:
         from src.invoice_number import clean_series
 

@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from src import checklist, contacts
+from src import checklist, contacts, exemptions
 from src.config_loader import get_config
 from src.models import InvoiceData
 from src.totals import (compute_totals, format_money, irpf_rate, normalize_prices,
@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 AWAIT_CONTACT = "__contact__"
 AWAIT_CONFIRM = "__confirm__"
 AWAIT_SAVE_CONTACT = "__save_contact__"
+AWAIT_VAT_REASON = "__vat_reason__"
 
 
 @dataclass
@@ -118,6 +119,8 @@ class Session:
     # the button)? Then it is remembered for the client, so next time it is right
     # without anyone having to say it again.
     irpf_explicit: bool = False
+    # Likewise the reason an invoice goes without VAT, when someone chose it.
+    vat_reason_explicit: bool = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -127,6 +130,7 @@ class Session:
         self.candidates = []
         self.token = None
         self.irpf_explicit = False
+        self.vat_reason_explicit = False
 
     @property
     def active(self) -> bool:
@@ -154,6 +158,13 @@ class Session:
 
         if self.awaiting == AWAIT_CONTACT:
             return self._pick_contact_by_text(text)
+
+        if self.awaiting == AWAIT_VAT_REASON:
+            key = exemptions.from_answer(text)
+            if key is None:
+                return [Reply("No lo he entendido. Elige uno de los botones, o dime su "
+                              "número de la lista.")]
+            return self.choose_vat_reason(key)
 
         if self.awaiting == AWAIT_CONFIRM:
             if says_yes(text):
@@ -242,6 +253,11 @@ class Session:
         # What was settled with this client last time, unless something else was said.
         if inv.irpf_rate is None and contact.get("irpf_rate") is not None:
             inv.irpf_rate = contact["irpf_rate"]
+        # A client whose invoices go without VAT (a company elsewhere in the EU, say).
+        reason = exemptions.get(contact.get("vat_reason"))
+        if reason and inv.tax_rate in (None, 0) and not inv.vat_reason:
+            inv.tax_rate = 0.0
+            inv.vat_reason = reason.key
 
     # ── The checklist ────────────────────────────────────────────────────────
 
@@ -251,11 +267,39 @@ class Session:
         question = checklist.next_question(self.invoice, config)
 
         if question is None:
+            inv = self.invoice
+            # No VAT and nothing that says why: ask, because the invoice must say it.
+            if (not vat_rate(inv, config) and not exemptions.get(inv.vat_reason)
+                    and not exemptions.default_for(inv, config)):
+                return self.ask_vat_reason()
             return self._present()
 
         field_name, prompt = question
         self.awaiting = field_name
         return [Reply(prompt)]
+
+    # ── Why there is no VAT ──────────────────────────────────────────────────
+
+    def ask_vat_reason(self) -> list[Reply]:
+        self.awaiting = AWAIT_VAT_REASON
+        text, buttons = exemptions.question(self.invoice.client_id)
+        return [Reply(text, buttons=buttons)]
+
+    def choose_vat_reason(self, key: str) -> list[Reply]:
+        reason = exemptions.get(key)
+        if reason is None:
+            return self.ask_vat_reason()
+        self.invoice.tax_rate = 0.0
+        self.invoice.vat_reason = reason.key
+        self.vat_reason_explicit = True
+        self.awaiting = None
+        return self._ask_next()
+
+    def drop_vat(self) -> list[Reply]:
+        """"Sin IVA" pressed: 0%, and then the reason, which the invoice must carry."""
+        self.invoice.tax_rate = 0.0
+        self.invoice.vat_reason = None
+        return self.ask_vat_reason()
 
     def _answer_field(self, text: str) -> list[Reply]:
         field_name = self.awaiting
@@ -302,6 +346,8 @@ class Session:
     def _present(self) -> list[Reply]:
         config = get_config()
         normalize_prices(self.invoice, config)
+        # The legal mention for an invoice without VAT, into the notes shown below.
+        exemptions.settle(self.invoice, config)
         self.awaiting = AWAIT_CONFIRM
 
         inv = self.invoice
@@ -334,18 +380,31 @@ class Session:
         if withholding and inv.client_id == "SIN NIF":
             lines.append("⚠️ Lleva retención de IRPF, pero a un particular no se le "
                          "aplica. Quítala con el botón si es el caso.")
+        charges_vat = bool(vat_rate(inv, config))
+        if charges_vat and exemptions.foreign_eu(inv.client_id):
+            lines.append("⚠️ Es una empresa de otro país de la UE: normalmente se le "
+                         "factura *sin IVA* (inversión del sujeto pasivo).")
         lines.append("")
         lines.append(summary_lines(inv, config))
+        reason = exemptions.get(inv.vat_reason)
+        if reason and not charges_vat:
+            lines.append(f"Sin IVA: {md(reason.label)}")
         if inv.notes:
             lines.append(f"\nObservaciones: {md(inv.notes)}")
 
         # Offered only where it can matter: an invoice that carries a withholding, or a
         # company that normally applies one. Everyone else never sees the button.
-        irpf_button = []
+        extra_buttons = []
         if withholding:
-            irpf_button = [("➖ Quitar retención", "toggle_irpf")]
+            extra_buttons = [("➖ Quitar retención", "toggle_irpf")]
         elif float(getattr(config, "irpf_rate", 0) or 0):
-            irpf_button = [(f"➕ Retención {rate_label(config.irpf_rate)}%", "toggle_irpf")]
+            extra_buttons = [(f"➕ Retención {rate_label(config.irpf_rate)}%",
+                              "toggle_irpf")]
+        # Likewise the reason for no VAT, or the way to drop it for an EU company.
+        if not charges_vat:
+            extra_buttons.append(("✏️ Motivo sin IVA", "vatwhy:ask"))
+        elif exemptions.foreign_eu(inv.client_id):
+            extra_buttons.append(("🇪🇺 Sin IVA", "vat0"))
 
         if is_quote:
             # A quote has no fiscal weight: anyone who may prepare invoices may send one.
@@ -354,7 +413,7 @@ class Session:
             buttons = [
                 ("📤 Enviar presupuesto", "approve"),
                 ("🔄 Cambiar IVA", "toggle_tax"),
-                *irpf_button,
+                *extra_buttons,
                 ("❌ Descartar", "cancel"),
             ]
         elif self.can_send:
@@ -363,7 +422,7 @@ class Session:
                 ("✅ Enviar", "approve"),
                 ("💾 Guardar sin enviar", "hold"),
                 ("🔄 Cambiar IVA", "toggle_tax"),
-                *irpf_button,
+                *extra_buttons,
                 ("❌ Descartar", "cancel"),
             ]
         else:
@@ -374,7 +433,7 @@ class Session:
             buttons = [
                 ("📤 Mandar a revisión", "approve"),
                 ("🔄 Cambiar IVA", "toggle_tax"),
-                *irpf_button,
+                *extra_buttons,
                 ("❌ Descartar", "cancel"),
             ]
 
@@ -395,12 +454,22 @@ class Session:
     def remember_terms(self) -> None:
         """Keep what was decided for this client for their next invoice."""
         inv = self.invoice
-        if inv is None or inv.contact_id is None or not self.irpf_explicit:
+        if inv is None or inv.contact_id is None:
+            return
+        terms = {}
+        if self.irpf_explicit:
+            terms["irpf_rate"] = inv.irpf_rate
+        # Only a reason that is about the client: "an EU company" is true next time
+        # too; "this service is exempt" is about the service.
+        reason = exemptions.get(inv.vat_reason)
+        if self.vat_reason_explicit and reason and reason.per_client:
+            terms["vat_reason"] = reason.key
+        if not terms:
             return
         try:
-            contacts.update(inv.contact_id, irpf_rate=inv.irpf_rate)
+            contacts.update(inv.contact_id, **terms)
         except Exception:
-            logger.exception("Could not remember the client's withholding")
+            logger.exception("Could not remember the client's terms")
 
     def toggle_tax(self) -> list[Reply]:
         """Flip between VAT-inclusive and VAT-on-top, recomputing from the original figures."""

@@ -88,8 +88,11 @@ def build_workbook(year: int, quarter: int, path: Path) -> Path:
     ]
     vat = taxes.vat_return(year, quarter)
     for rate in sorted(vat.by_rate, reverse=True):
-        base, tax = vat.by_rate[rate]
-        rows.append([f"{taxes.rate_name(rate)} (devengado)", base, tax])
+        if rate:
+            base, tax = vat.by_rate[rate]
+            rows.append([f"{taxes.rate_name(rate)} (devengado)", base, tax])
+    for name, base in taxes.without_vat_rows(vat):
+        rows.append([name, base, 0.0])
     rows.append(["Total IVA devengado", vat.output_base, vat.output_tax])
     rows.append(["IVA deducible (gastos registrados)", vat.input_base, vat.input_tax])
     rows.append(["Resultado (positivo = a ingresar)", None, vat.result])

@@ -25,6 +25,7 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Optional
 
+from src import exemptions
 from src.config_loader import get_config
 from src.models import InvoiceData, percent_of
 
@@ -344,10 +345,14 @@ def facturae(number: str) -> bytes:
         _el(line, "GrossAmount", _money(item.total))
         _fe_tax(_el(line, "TaxesOutputs"), "01", t.tax_rate, item.total,
                 percent_of(item.total, t.tax_rate))
-        if not t.tax_rate:
+        reason = exemptions.get(invoice.vat_reason)
+        # Reverse charge is neither exempt nor "not subject": the legal text says it.
+        if not t.tax_rate and not (reason and reason.key == "reverse_charge"):
             event = _el(line, "SpecialTaxableEvent")
-            _el(event, "SpecialTaxableEventCode", "01")
-            _el(event, "SpecialTaxableEventReason", "Operación exenta de IVA")
+            not_subject = bool(reason) and reason.verifactu.startswith("N")
+            _el(event, "SpecialTaxableEventCode", "02" if not_subject else "01")
+            _el(event, "SpecialTaxableEventReason",
+                reason.text if reason else "Operación exenta de IVA")
 
     if config.bank_account and not invoice.rectifies and t.total > 0:
         installment = _el(_el(doc, "PaymentDetails"), "Installment")
@@ -394,13 +399,18 @@ def _ubl_party(parent, tag: str, data: dict, email: Optional[str]) -> None:
         _cbc(_cac(party, "Contact"), "ElectronicMail", email)
 
 
-def _ubl_category(parent, tag: str, rate: float, reason: bool = False) -> None:
+def _ubl_category(parent, tag: str, rate: float, vat_reason: Optional[str] = None,
+                  explain: bool = False) -> None:
+    reason = exemptions.get(vat_reason)
+    code = "S" if rate else (reason.en16931 if reason else "E")
     category = _cac(parent, tag)
-    _cbc(category, "ID", "S" if rate else "E")
-    _cbc(category, "Percent", _number(rate))
+    _cbc(category, "ID", code)
+    if code != "O":                     # "not subject" carries no rate at all
+        _cbc(category, "Percent", _number(rate))
     # The exemption reason belongs in the VAT breakdown only, not on each line.
-    if reason and not rate:
-        _cbc(category, "TaxExemptionReason", "Operación exenta de IVA")
+    if explain and not rate:
+        _cbc(category, "TaxExemptionReason",
+             reason.text if reason else "Operación exenta de IVA")
     _cbc(_cac(category, "TaxScheme"), "ID", "VAT")
 
 
@@ -454,7 +464,7 @@ def ubl(number: str) -> bytes:
     subtotal = _cac(tax_total, "TaxSubtotal")
     _cbc(subtotal, "TaxableAmount", _money(t.base), currencyID="EUR")
     _cbc(subtotal, "TaxAmount", _money(t.tax), currencyID="EUR")
-    _ubl_category(subtotal, "TaxCategory", t.tax_rate, reason=True)
+    _ubl_category(subtotal, "TaxCategory", t.tax_rate, invoice.vat_reason, explain=True)
 
     if t.irpf:
         withholding = _cac(root, "WithholdingTaxTotal")
@@ -483,7 +493,7 @@ def ubl(number: str) -> bytes:
         _cbc(line, "LineExtensionAmount", _money(item.total), currencyID="EUR")
         product = _cac(line, "Item")
         _cbc(product, "Name", (item.description or "Servicio")[:200])
-        _ubl_category(product, "ClassifiedTaxCategory", t.tax_rate)
+        _ubl_category(product, "ClassifiedTaxCategory", t.tax_rate, invoice.vat_reason)
         _cbc(_cac(line, "Price"), "PriceAmount", _number(sign * item.unit_price),
              currencyID="EUR")
 

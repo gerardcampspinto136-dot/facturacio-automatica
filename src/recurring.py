@@ -75,12 +75,13 @@ def create_from_invoice(invoice: InvoiceData, frequency: str = MONTHLY, *,
             "INSERT INTO recurring_invoices (contact_id, client_name, client_email, "
             "client_address, client_id, items_json, notes, tax_rate, irpf_rate, frequency, "
             "day_of_month, next_date, auto_send, created_by, created_chat_id, "
-            "source_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source_number, vat_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (invoice.contact_id, invoice.client_name, invoice.client_email,
              invoice.client_address, invoice.client_id, _items_json(invoice),
              None, invoice.tax_rate, invoice.irpf_rate, frequency, start.day,
              next_after(start, frequency, start.day).isoformat(), int(auto_send),
-             created_by, created_chat_id, invoice.invoice_number),
+             created_by, created_chat_id, invoice.invoice_number, invoice.vat_reason),
         )
         return cur.lastrowid
 
@@ -129,6 +130,7 @@ def invoice_for(template: dict, today: date) -> InvoiceData:
         contact_id=template["contact_id"],
         tax_rate=template["tax_rate"],
         irpf_rate=template["irpf_rate"],
+        vat_reason=template.get("vat_reason"),
         prices_include_tax=False,
         prices_normalized=True,
     )

@@ -116,6 +116,7 @@ def _row_to_invoice(conn, row) -> InvoiceData:
         contact_id=row["contact_id"],
         tax_rate=row["tax_rate"],
         irpf_rate=row["irpf_rate"],
+        vat_reason=row["vat_reason"],
         due_date=date.fromisoformat(row["due_date"]) if row["due_date"] else None,
         quote_number=row["quote_number"],
     )
@@ -183,8 +184,8 @@ def add_pending(invoice: InvoiceData, draft_path: str, *, token: Optional[str] =
             "(status, token, client_name, client_email, client_address, client_id, "
             " date, notes, rectifies, prices_include_tax, contact_id, tax_rate, "
             " irpf_rate, draft_path, created_by, created_by_name, created_chat_id, "
-            " created_at, quote_number) "
-            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " created_at, quote_number, vat_reason) "
+            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 token,
                 invoice.client_name,
@@ -204,6 +205,7 @@ def add_pending(invoice: InvoiceData, draft_path: str, *, token: Optional[str] =
                 created_chat_id,
                 datetime.now().isoformat(timespec="seconds"),
                 invoice.quote_number,
+                invoice.vat_reason,
             ),
         )
         _write_items(conn, cur.lastrowid, invoice)
@@ -243,7 +245,7 @@ def update_pending(token: str, invoice: InvoiceData, draft_path: Optional[str] =
         conn.execute(
             "UPDATE invoices SET client_name = ?, client_email = ?, client_address = ?, "
             "client_id = ?, date = ?, notes = ?, prices_include_tax = ?, tax_rate = ?, "
-            "irpf_rate = ?"
+            "irpf_rate = ?, vat_reason = ?"
             + (", draft_path = ?" if draft_path is not None else "")
             + " WHERE id = ?",
             (
@@ -256,6 +258,7 @@ def update_pending(token: str, invoice: InvoiceData, draft_path: Optional[str] =
                 None if invoice.prices_include_tax is None else int(invoice.prices_include_tax),
                 invoice.tax_rate,
                 invoice.irpf_rate,
+                invoice.vat_reason,
                 *([draft_path] if draft_path is not None else []),
                 row["id"],
             ),
@@ -330,6 +333,7 @@ def write_issued(conn, invoice: InvoiceData, number: str, *, token: Optional[str
         invoice.tax_rate,
         invoice.irpf_rate,
         invoice.quote_number,
+        invoice.vat_reason,
     )
 
     if token:
@@ -343,7 +347,7 @@ def write_issued(conn, invoice: InvoiceData, number: str, *, token: Optional[str
             "UPDATE invoices SET client_name = ?, client_email = ?, client_address = ?, "
             "client_id = ?, date = ?, notes = ?, rectifies = ?, prices_include_tax = ?, "
             "contact_id = COALESCE(?, contact_id), tax_rate = ?, irpf_rate = ?, "
-            "quote_number = COALESCE(?, quote_number) WHERE id = ?",
+            "quote_number = COALESCE(?, quote_number), vat_reason = ? WHERE id = ?",
             (*fields, invoice_id),
         )
     else:
@@ -351,8 +355,8 @@ def write_issued(conn, invoice: InvoiceData, number: str, *, token: Optional[str
             "INSERT INTO invoices "
             "(status, client_name, client_email, client_address, client_id, date, notes, "
             " rectifies, prices_include_tax, contact_id, tax_rate, irpf_rate, "
-            " quote_number) "
-            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " quote_number, vat_reason) "
+            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             fields,
         )
         invoice_id = cur.lastrowid

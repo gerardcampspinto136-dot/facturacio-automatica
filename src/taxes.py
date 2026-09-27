@@ -130,6 +130,9 @@ class VatReturn:
     year: int
     quarter: int
     by_rate: dict = field(default_factory=dict)      # rate -> [base, tax]
+    # Sales without VAT by why (src/exemptions key, "" when never said): the return
+    # puts intra-EU sales, exports and reverse charge in different boxes.
+    without_vat: dict = field(default_factory=dict)  # reason -> base
     output_base: float = 0.0
     output_tax: float = 0.0
     input_base: float = 0.0
@@ -155,6 +158,9 @@ def vat_return(year: int, quarter: int) -> VatReturn:
         base, tax = out.by_rate.setdefault(t.tax_rate, [0.0, 0.0])
         out.by_rate[t.tax_rate] = [round_money(_d(base) + _d(t.base)),
                                    round_money(_d(tax) + _d(t.tax))]
+        if not t.tax_rate:
+            why = record["invoice"].vat_reason or ""
+            out.without_vat[why] = round_money(_d(out.without_vat.get(why)) + _d(t.base))
         out.invoices += 1
     out.output_base = round_money(sum(_d(b) for b, _ in out.by_rate.values()))
     out.output_tax = round_money(sum(_d(t) for _, t in out.by_rate.values()))
@@ -166,6 +172,27 @@ def vat_return(year: int, quarter: int) -> VatReturn:
         if not bill["tax_amount"]:
             out.bills_without_vat += 1
     return out
+
+
+def without_vat_rows(vat: VatReturn) -> list[tuple[str, float]]:
+    """Sales without VAT as (name, base), by reason in the order of src/exemptions."""
+    from src import exemptions
+
+    order = list(exemptions.REASONS)
+    rows = []
+    for why in sorted(vat.without_vat, key=lambda k: order.index(k) if k in order
+                      else len(order)):
+        reason = exemptions.get(why)
+        name = f"Sin IVA: {reason.label}" if reason else "Sin IVA (sin motivo indicado)"
+        rows.append((name, vat.without_vat[why]))
+    return rows
+
+
+def vat_rows(vat: VatReturn) -> list[tuple[str, float, float]]:
+    """The return's sales lines as (name, base, VAT): charged by rate, then without."""
+    return ([(rate_name(rate), *vat.by_rate[rate])
+             for rate in sorted(vat.by_rate, reverse=True) if rate]
+            + [(name, base, 0.0) for name, base in without_vat_rows(vat)])
 
 
 @dataclass
@@ -234,8 +261,8 @@ def summary_text(year: int, quarter: int) -> str:
             if rate:
                 lines.append(f"  IVA repercutido {rate_label(rate)}%: "
                              f"{format_money(tax, config)} (base {format_money(base, config)})")
-            else:
-                lines.append(f"  Ventas exentas de IVA: {format_money(base, config)}")
+        for name, base in without_vat_rows(vat):
+            lines.append(f"  {name}: {format_money(base, config)}")
     else:
         lines.append("  Sin facturas emitidas en el trimestre.")
     lines.append(f"  IVA soportado deducible: {format_money(vat.input_tax, config)}"

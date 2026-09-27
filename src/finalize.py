@@ -77,14 +77,18 @@ def prepare(invoice: InvoiceData, config=None) -> InvoiceData:
     """Settle everything about an invoice that must not change once it is issued.
 
     Net prices, and the VAT and IRPF rates -- taken from the company default only if
-    the invoice has none of its own, and then kept on the invoice for good.
+    the invoice has none of its own, and then kept on the invoice for good. Without
+    VAT, the reason why, printed on it as the law requires.
     """
+    from src import exemptions
+
     config = config or get_config()
     normalize_prices(invoice, config)
     if invoice.tax_rate is None:
         invoice.tax_rate = float(config.tax_rate)
     if invoice.irpf_rate is None:
         invoice.irpf_rate = float(getattr(config, "irpf_rate", 0) or 0)
+    exemptions.settle(invoice, config)
     return invoice
 
 

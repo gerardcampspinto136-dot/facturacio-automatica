@@ -23,7 +23,7 @@ from datetime import date, datetime
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
-from src import accounts, bills, finalize, rectify, store
+from src import accounts, bills, exemptions, finalize, rectify, store
 from src.totals import compute_totals, format_money as _fmt, irpf_rate, vat_rate
 from src.config_loader import get_config
 from src.invoice_generator import generate_invoice_pdf
@@ -774,6 +774,11 @@ def _pending_table(pending, user) -> str:
         email = (f"<span class='muted'>{html.escape(inv.client_email)}</span>"
                  if inv.client_email else
                  "<span class='badge badge-warn'>sin email</span>")
+        # Without VAT the invoice must say why; "Editar" is where to choose it.
+        if (not vat_rate(inv) and not exemptions.get(inv.vat_reason)
+                and not exemptions.default_for(inv)):
+            email += (" <span class='badge badge-warn' title='Edítala y elige el motivo'>"
+                      "sin IVA: falta el motivo</span>")
         buttons = [f"<a class='btn btn-neutral btn-sm' href='/invoice/{p['token']}/pdf' "
                    f"target='_blank'>PDF</a>"]
         if may_edit:
@@ -851,6 +856,10 @@ async def edit_form(request: Request, token: str):
         f"value='{vat_rate(inv):g}'></div>"
         f"<div><label>Retención IRPF (%) <span class='field-hint'>0 si no lleva</span>"
         f"</label><input name='irpf_rate' value='{irpf_rate(inv):g}'></div></div>"
+        f"<label>Si va sin IVA, el motivo <span class='field-hint'>obligatorio: sale "
+        f"impreso en la factura</span></label><select name='vat_reason'>"
+        + exemptions.options_html(inv.vat_reason, "— (lleva IVA)")
+        + "</select>"
         f"<label>Notas</label><textarea name='notes' rows='2'>{html.escape(inv.notes or '')}</textarea>"
         f"<div class='actions'><button class='btn-primary'>Guardar cambios</button>"
         f"<a class='btn btn-neutral' href='/'>Cancelar</a></div>"
@@ -901,6 +910,9 @@ async def edit_submit(request: Request, token: str):
                                  total=round(qty * price, 2)))
     if items:
         inv.items = items
+    inv.vat_reason = form.get("vat_reason") or None
+    # The legal mention follows the rate and the reason chosen, in the notes.
+    exemptions.settle(inv)
 
     draft_path = p["draft_path"]
     generate_invoice_pdf(inv, draft_path)
@@ -1372,9 +1384,9 @@ async def taxes_page(request: Request, y: int = 0, q: int = 0):
                        f"se presenta desde el {window_start.strftime('%d/%m')}"))
 
     rate_rows = "".join(
-        f"<tr><td>{taxes.rate_name(rate)}</td><td class='num'>{_money(base)}</td>"
+        f"<tr><td>{html.escape(name)}</td><td class='num'>{_money(base)}</td>"
         f"<td class='num'>{_money(tax)}</td></tr>"
-        for rate, (base, tax) in sorted(vat.by_rate.items(), reverse=True)
+        for name, base, tax in taxes.vat_rows(vat)
     ) or "<tr><td colspan='3' class='muted'>Sin facturas emitidas en el trimestre</td></tr>"
     vat_card = (
         "<div class='card'><div class='card-title'>Modelo 303 — IVA</div>"
@@ -2199,6 +2211,11 @@ async def contact_detail(request: Request, contact_id: int):
                 "number")
         + (field("Retención IRPF (%)", "irpf_rate", contact.get("irpf_rate"), "text",
                  "vacío = la de la empresa") if is_client else "")
+        + (f"<label>Sus facturas van sin IVA <span class='field-hint'>el motivo sale "
+           f"impreso</span></label><select name='vat_reason'"
+           f"{'' if may_edit else ' disabled'}>"
+           + exemptions.options_html(contact.get("vat_reason"), "No — llevan IVA")
+           + "</select>" if is_client else "")
         + "</div></div>"
         + (_dir3_fields(contact, field) if is_client else "")
         + f"<label>Notas</label><textarea name='notes' rows='2'"
@@ -2302,6 +2319,9 @@ async def contact_save(request: Request, contact_id: int):
             changes["irpf_rate"] = float(raw_irpf) if raw_irpf else None
         except ValueError:
             pass
+    if "vat_reason" in form:
+        changes["vat_reason"] = form.get("vat_reason") if exemptions.get(
+            form.get("vat_reason")) else None
     try:
         for key, _ in _DIR3:
             if key in form:

@@ -64,6 +64,9 @@ class CompanyConfig:
         # IRPF withheld by the client on every invoice, unless said otherwise: 15 for
         # a professional (7 in their first years), 0 for everyone else.
         self.irpf_rate = float(invoice.get("irpf_rate", 0) or 0)
+        # A business whose activity is VAT-exempt (tax_rate 0): why, printed on every
+        # invoice. A key of src/exemptions.REASONS, e.g. "exempt".
+        self.vat_reason = invoice.get("vat_reason") or None
         self.currency = invoice.get("currency", "EUR")
         self.currency_symbol = invoice.get("currency_symbol", "€")
         self.payment_terms = invoice.get("payment_terms", "30 días")
@@ -186,6 +189,7 @@ class CompanyConfig:
         take("iban", "bank_account")
         take("tax_rate", cast=float)
         take("irpf_rate", cast=float)
+        take("vat_reason")
         take("payment_terms")
         take("invoice_series", cast=_series)
         take("logo_path")

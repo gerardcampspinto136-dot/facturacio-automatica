@@ -283,7 +283,9 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str,
     # ── Notes ────────────────────────────────────────────────────────────────
     if invoice.notes:
         elements.append(Spacer(1, 0.6 * cm))
-        elements.append(Paragraph(f"<b>Notas:</b> {_t(invoice.notes)}",
+        # Line breaks kept: the legal mention for an invoice without VAT is its own line.
+        notes = _t(invoice.notes).replace("\n", "<br/>")
+        elements.append(Paragraph(f"<b>Notas:</b> {notes}",
                                   _style("Notes", fontSize=9, textColor=TEXT_MUTED)))
 
     # ── Bank account ─────────────────────────────────────────────────────────

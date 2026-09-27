@@ -76,6 +76,7 @@ def rectify(original_number: str, reason: Optional[str] = None):
         # Exactly the rates the original was issued at, so it cancels to the cent.
         tax_rate=original.tax_rate,
         irpf_rate=original.irpf_rate,
+        vat_reason=original.vat_reason,
     )
     finalize.prepare(rectifying)
 

@@ -149,7 +149,7 @@ SETTINGS_FIELDS = (
     "name", "tax_id", "address", "phone", "invoice_email", "iban",
     "tax_rate", "irpf_rate", "payment_terms", "prices_include_tax", "invoice_series",
     "review_mode", "telegram_bot_token", "telegram_chat_id", "logo_path",
-    "contact_email", "notes", "gestor_email", "collections_mode",
+    "contact_email", "notes", "gestor_email", "collections_mode", "vat_reason",
 )
 
 # Without these an invoice is not a valid Spanish invoice, so they gate "configured".

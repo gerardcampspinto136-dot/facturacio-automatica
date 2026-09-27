@@ -83,11 +83,11 @@ def issue(invoice: InvoiceData, created_by: Optional[int] = None) -> QuoteResult
         cur = conn.execute(
             "INSERT INTO quotes (number, contact_id, client_name, client_email, "
             "client_address, client_id, date, valid_until, notes, tax_rate, irpf_rate, "
-            "created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_by, vat_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (number, invoice.contact_id, invoice.client_name, invoice.client_email,
              invoice.client_address, invoice.client_id, today.isoformat(),
              valid_until.isoformat(), invoice.notes, invoice.tax_rate, invoice.irpf_rate,
-             created_by),
+             created_by, invoice.vat_reason),
         )
         for position, item in enumerate(invoice.items):
             conn.execute(
@@ -161,7 +161,7 @@ def _payload(conn, row) -> dict:
         invoice_number=row["number"], date=date.fromisoformat(row["date"]),
         notes=row["notes"], prices_include_tax=False, prices_normalized=True,
         contact_id=row["contact_id"], tax_rate=row["tax_rate"],
-        irpf_rate=row["irpf_rate"], document="quote",
+        irpf_rate=row["irpf_rate"], vat_reason=row["vat_reason"], document="quote",
     )
     valid_until = date.fromisoformat(row["valid_until"])
     status = row["status"]
@@ -235,6 +235,7 @@ def to_invoice(number: str) -> InvoiceData:
         notes=f"Según presupuesto {number}.", prices_include_tax=False,
         prices_normalized=True, contact_id=source.contact_id,
         tax_rate=source.tax_rate, irpf_rate=source.irpf_rate, quote_number=number,
+        vat_reason=source.vat_reason,
     )
 
 

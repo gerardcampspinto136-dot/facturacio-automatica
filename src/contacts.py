@@ -15,7 +15,7 @@ SUPPLIER = "supplier"
 
 _FIELDS = (
     "name", "tax_id", "email", "phone", "address",
-    "payment_terms_days", "iban", "notes", "active", "irpf_rate",
+    "payment_terms_days", "iban", "notes", "active", "irpf_rate", "vat_reason",
     "dir3_accounting", "dir3_managing", "dir3_processing",
 )
 
