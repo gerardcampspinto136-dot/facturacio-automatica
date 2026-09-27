@@ -131,20 +131,19 @@ def jobs() -> list[tuple[str, Optional[timedelta], Callable[[], None]]]:
 
 
 def _extra_jobs() -> list:
-    """Daily chores contributed by other modules (recurring invoices, dunning...)."""
-    extra = []
-    for module_name, job_name, attr in (
-        ("src.recurring", "recurring_invoices", "run_due"),
-        ("src.payment_reminders", "payment_reminders", "run_due"),
-        ("src.gestor_pack", "tax_calendar", "quarter_reminder"),
-        ("src.backup", "backup", "run_due"),
-    ):
-        try:
-            module = __import__(module_name, fromlist=[attr])
-        except ImportError:
-            continue
-        extra.append((job_name, timedelta(days=1), getattr(module, attr)))
-    return extra
+    """Daily chores contributed by other modules. A fourth element is the hour the job
+    waits for, when the morning is the wrong time for it."""
+    from src import backup, gestor_pack, payment_reminders, recurring, timeclock
+
+    day = timedelta(days=1)
+    return [
+        ("recurring_invoices", day, recurring.run_due),
+        ("payment_reminders", day, payment_reminders.run_due),
+        ("tax_calendar", day, gestor_pack.quarter_reminder),
+        ("backup", day, backup.run_due),
+        # "You are still clocked in": only makes sense at the end of the day.
+        ("clock_reminder", day, timeclock.remind_forgotten, 20),
+    ]
 
 
 def tick(now: Optional[datetime] = None) -> list[str]:
@@ -152,8 +151,10 @@ def tick(now: Optional[datetime] = None) -> list[str]:
     now = now or datetime.now()
     hour = int(getattr(get_config(), "alert_hour", 9))
     ran = []
-    for name, every, job in jobs():
-        if not is_due(last_run(name), every, now, hour):
+    for entry in jobs():
+        name, every, job = entry[:3]
+        job_hour = entry[3] if len(entry) > 3 else hour
+        if not is_due(last_run(name), every, now, job_hour):
             continue
         try:
             job()

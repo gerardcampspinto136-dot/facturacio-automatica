@@ -55,6 +55,7 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "users.manage":       ("Administración", "Gestionar las cuentas del equipo"),
     "settings.manage":    ("Administración", "Cambiar la configuración de la empresa"),
     "taxes.view":         ("Impuestos", "Ver los impuestos y el paquete para el gestor"),
+    "timeclock.manage":   ("Administración", "Ver y corregir los fichajes de todo el equipo"),
 }
 
 # A sensible starting point when the owner adds someone, so the common case is one

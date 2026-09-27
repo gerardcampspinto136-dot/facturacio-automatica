@@ -487,6 +487,7 @@ _NAV = (
         ("invoices.view", "/verifactu", "▣", "Verifactu"),
     )),
     ("Administración", (
+        ("clock", "/timeclock", "⏱", "Registro de jornada"),
         ("users.manage", "/team", "◍", "Equipo"),
         ("settings.manage", "/backups", "⛁", "Copias de seguridad"),
         ("companies.manage", "/admin", "⌂", "Empresas"),
@@ -518,7 +519,11 @@ def _sidebar(user: dict, current: str) -> str:
     for label, entries in _NAV:
         links = []
         for permission, href, icon, text in entries:
-            if permission and not accounts.can(user, permission):
+            if permission == "clock":
+                # Everyone with an account keeps -- and may see -- their own record.
+                if not user.get("id"):
+                    continue
+            elif permission and not accounts.can(user, permission):
                 continue
             active = " active" if href == current else ""
             badge = ""
@@ -1661,6 +1666,163 @@ async def bills_delete(request: Request, bill_id: int):
         return refusal
     bills.delete(bill_id)
     return RedirectResponse("/bills", status_code=303)
+
+
+# ── The working-time record ──────────────────────────────────────────────────
+
+@app.get("/timeclock", response_class=HTMLResponse)
+async def timeclock_page(request: Request, who: int = 0, month: str = ""):
+    from src import timeclock
+
+    user, refusal = _guard(request)
+    if refusal:
+        return refusal
+    if not user.get("id"):
+        return _page("Registro de jornada", "<div class='card'>Hace falta una cuenta real "
+                     "para fichar.</div>", user, current="/timeclock")
+    manager = accounts.can(user, "timeclock.manage")
+    target_id = who if (manager and who) else user["id"]
+    target = accounts.get_user(target_id)
+    if target is None or (manager and target.get("company_id") != user.get("company_id")
+                          and user.get("role") != accounts.SUPERADMIN):
+        target_id, target = user["id"], accounts.get_user(user["id"])
+
+    today = date.today()
+    try:
+        year, mon = (int(p) for p in month.split("-")) if month else (today.year, today.month)
+    except ValueError:
+        year, mon = today.year, today.month
+    start, end = timeclock.month_bounds(year, mon)
+    days = timeclock.days(target_id, start, min(end, today))
+    total = sum(d.hours for d in days)
+
+    picker = ""
+    if manager:
+        people = [u for u in accounts.list_users(user.get("company_id"))
+                  if u["active"]] if user.get("company_id") else accounts.list_users()
+        options = "".join(
+            f"<option value='{u['id']}'{' selected' if u['id'] == target_id else ''}>"
+            f"{html.escape(u['name'] or u['email'])}</option>" for u in people)
+        picker = (f"<form method='get' action='/timeclock' class='billform'>"
+                  f"<select name='who' style='width:auto'>{options}</select>"
+                  f"<input type='month' name='month' value='{year}-{mon:02d}' "
+                  f"style='width:auto'><button class='btn-neutral'>Ver</button></form>")
+    else:
+        picker = (f"<form method='get' action='/timeclock' class='billform'>"
+                  f"<input type='month' name='month' value='{year}-{mon:02d}' "
+                  f"style='width:auto'><button class='btn-neutral'>Ver</button></form>")
+
+    state = timeclock.state(user["id"])
+    next_kinds = {"out": [("in", "🟢 Empezar la jornada")],
+                  "working": [("break_start", "☕ Pausa"), ("out", "🔴 Terminar")],
+                  "on_break": [("break_end", "▶️ Volver de la pausa"), ("out", "🔴 Terminar")]}
+    own_buttons = "".join(
+        f"<form method='post' action='/timeclock/clock'><input type='hidden' name='kind' "
+        f"value='{kind}'><button class='btn-primary'>{label}</button></form>"
+        for kind, label in next_kinds[state])
+    clock_card = ("<div class='card'><div class='card-title'>Tu jornada de hoy</div>"
+                  f"<div class='actions'>{own_buttons}</div></div>")
+
+    rows = "".join(
+        f"<tr><td class='strong'>{d.day.strftime('%d/%m')}</td>"
+        f"<td>{d.first_in.strftime('%H:%M') if d.first_in else '—'}</td>"
+        f"<td>{d.last_out.strftime('%H:%M') if d.last_out and not d.open else ('<span class=\"badge badge-warn\">abierta</span>' if d.open else '—')}</td>"
+        f"<td class='muted'>{timeclock.hhmm(d.breaks.total_seconds() / 3600) if d.breaks else '—'}</td>"
+        f"<td class='num total'>{timeclock.hhmm(d.hours)}</td>"
+        f"<td>{'<span class=\"badge\">corregido</span>' if d.corrected else ''}</td></tr>"
+        for d in days)
+    table = ("<div class='card'><div class='table-wrap'><table><thead><tr><th>Día</th>"
+             "<th>Entrada</th><th>Salida</th><th>Pausas</th><th class='num'>Horas</th>"
+             f"<th></th></tr></thead><tbody>{rows}</tbody></table></div></div>"
+             if rows else _empty("Sin fichajes este mes"))
+
+    correction = ""
+    if manager:
+        correction = (
+            "<div class='card'><div class='card-title'>Añadir una corrección</div>"
+            "<div class='card-hint'>Para un olvido: queda anotada como corrección, con "
+            "tu nombre y el motivo. El fichaje original no se toca.</div>"
+            f"<form method='post' action='/timeclock/correct' class='billform'>"
+            f"<input type='hidden' name='who' value='{target_id}'>"
+            "<input type='date' name='day' required style='width:auto'>"
+            "<input type='time' name='time' required style='width:auto'>"
+            "<select name='kind' style='width:auto'><option value='out'>Salida</option>"
+            "<option value='in'>Entrada</option><option value='break_start'>Inicio de "
+            "pausa</option><option value='break_end'>Fin de pausa</option></select>"
+            "<input name='reason' placeholder='Motivo (p. ej. olvidó fichar la salida)' "
+            "required><button class='btn-neutral'>Añadir</button></form></div>")
+
+    download = (f"<a class='btn btn-neutral' href='/timeclock/pdf?who={target_id}"
+                f"&month={year}-{mon:02d}'>📄 Informe del mes (PDF)</a>")
+    body = (clock_card + f"<div class='card'>{picker}</div>"
+            + f"<div class='stats'>{_stat('Horas del mes', timeclock.hhmm(total))}"
+            + f"{_stat('Días trabajados', str(len(days)))}</div>"
+            + table + correction)
+    name = target.get("name") or target["email"]
+    return _page("Registro de jornada", body, user,
+                 subtitle=f"{html.escape(name)} · {mon:02d}/{year}", current="/timeclock",
+                 actions=download)
+
+
+@app.post("/timeclock/clock")
+async def timeclock_clock(request: Request):
+    from src import timeclock
+
+    user, refusal = _guard(request)
+    if refusal:
+        return refusal
+    form = await request.form()
+    if user.get("id") and form.get("kind") in timeclock.LABELS:
+        try:
+            timeclock.clock(user["id"], form.get("kind"), source="web")
+        except timeclock.ClockError as exc:
+            return _page("No se ha fichado", f"<div class='card'>{html.escape(str(exc))}"
+                         "<div class='actions'><a class='btn btn-neutral' "
+                         "href='/timeclock'>Volver</a></div></div>", user)
+    return RedirectResponse("/timeclock", status_code=303)
+
+
+@app.post("/timeclock/correct")
+async def timeclock_correct(request: Request):
+    from src import timeclock
+
+    user, refusal = _guard(request, "timeclock.manage")
+    if refusal:
+        return refusal
+    form = await request.form()
+    try:
+        who = int(form.get("who"))
+        at = datetime.fromisoformat(f"{form.get('day')}T{form.get('time')}").astimezone()
+        timeclock.correct(who, form.get("kind"), at, user["id"], form.get("reason") or "")
+    except (ValueError, TypeError, timeclock.ClockError) as exc:
+        return _page("No se ha corregido", f"<div class='card'>{html.escape(str(exc))}"
+                     "<div class='actions'><a class='btn btn-neutral' href='/timeclock'>"
+                     "Volver</a></div></div>", user)
+    return RedirectResponse(f"/timeclock?who={who}&month={form.get('day')[:7]}",
+                            status_code=303)
+
+
+@app.get("/timeclock/pdf")
+async def timeclock_pdf(request: Request, who: int = 0, month: str = ""):
+    import tempfile
+
+    from src import timeclock
+
+    user, refusal = _guard(request)
+    if refusal:
+        return refusal
+    target_id = who if (who and accounts.can(user, "timeclock.manage")) else user.get("id")
+    if not target_id:
+        return RedirectResponse("/timeclock", status_code=303)
+    today = date.today()
+    try:
+        year, mon = (int(p) for p in month.split("-")) if month else (today.year, today.month)
+    except ValueError:
+        year, mon = today.year, today.month
+    path = str(Path(tempfile.mkdtemp()) / f"Jornada_{year}-{mon:02d}.pdf")
+    await asyncio.to_thread(timeclock.monthly_pdf, target_id, year, mon, path)
+    return FileResponse(path, media_type="application/pdf",
+                        filename=f"Registro_jornada_{year}-{mon:02d}.pdf")
 
 
 # ── The bank ─────────────────────────────────────────────────────────────────

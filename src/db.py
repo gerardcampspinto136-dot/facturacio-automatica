@@ -217,6 +217,37 @@ CREATE TABLE IF NOT EXISTS recurring_invoices (
 );
 CREATE INDEX IF NOT EXISTS idx_recurring_due ON recurring_invoices (active, next_date);
 
+-- The working-time record (registro de jornada, art. 34.9 of the Estatuto de los
+-- Trabajadores): each clock event as it happened, chained by fingerprint like the
+-- Verifactu register, never edited. A mistake -- a forgotten clock-out -- is fixed by
+-- adding a correction that says who made it and why; the original stays.
+CREATE TABLE IF NOT EXISTS time_entries (
+    id            INTEGER PRIMARY KEY,
+    user_id       INTEGER NOT NULL REFERENCES users (id),
+    kind          TEXT NOT NULL CHECK (kind IN ('in', 'out', 'break_start', 'break_end')),
+    at            TEXT NOT NULL,
+    source        TEXT NOT NULL DEFAULT 'telegram',
+    note          TEXT,
+    corrected_by  INTEGER REFERENCES users (id),
+    reason        TEXT,
+    previous_hash TEXT NOT NULL DEFAULT '',
+    hash          TEXT NOT NULL UNIQUE,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_time_user ON time_entries (user_id, at);
+
+CREATE TRIGGER IF NOT EXISTS trg_time_frozen
+BEFORE UPDATE ON time_entries
+BEGIN
+    SELECT RAISE(ABORT, 'Un fichaje no se puede modificar: añade una corrección.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_time_kept
+BEFORE DELETE ON time_entries
+BEGIN
+    SELECT RAISE(ABORT, 'Un fichaje no se puede borrar: añade una corrección.');
+END;
+
 -- Movements imported from bank statements, kept so that importing the same statement
 -- twice adds nothing, and so each can be matched to what it paid: an invoice (money
 -- in), a supplier bill (money out), or a new expense recorded from it.

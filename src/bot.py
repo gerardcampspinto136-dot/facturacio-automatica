@@ -999,6 +999,98 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             os.unlink(tmp_path)
 
 
+# ── Clocking in and out ──────────────────────────────────────────────────────
+
+def _clock_buttons(state: str) -> list:
+    if state == "out":
+        return [("🟢 Empezar la jornada", "clock:in")]
+    if state == "on_break":
+        return [[("▶️ Volver de la pausa", "clock:break_end"),
+                 ("🔴 Terminar", "clock:out")]]
+    return [[("☕ Pausa", "clock:break_start"), ("🔴 Terminar", "clock:out")]]
+
+
+def _today_line(user_id: int) -> str:
+    from datetime import date
+
+    from src import timeclock
+
+    today = timeclock.days(user_id, date.today(), date.today())
+    if not today:
+        return "Hoy todavía no has fichado."
+    d = today[0]
+    parts = [f"Hoy: entrada {d.first_in:%H:%M}" if d.first_in else "Hoy:"]
+    if d.last_out and not d.open:
+        parts.append(f"salida {d.last_out:%H:%M}")
+    parts.append(f"{timeclock.hhmm(d.hours)} h trabajadas")
+    if d.breaks:
+        parts.append(f"{timeclock.hhmm(d.breaks.total_seconds() / 3600)} de pausa")
+    return ", ".join(parts) + "."
+
+
+async def cmd_fichar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Clock in and out: one button, whichever makes sense right now."""
+    from src import timeclock
+
+    user = await _gate(update)
+    if user is None:
+        return
+    if not user.get("id"):
+        await update.message.reply_text(
+            "Para fichar hace falta tu propia cuenta: conéctala desde el panel "
+            "(Mi cuenta → Conectar Telegram).")
+        return
+    state = timeclock.state(user["id"])
+    headline = {"out": "No estás fichado.", "working": "Estás trabajando.",
+                "on_break": "Estás en pausa."}[state]
+    await update.message.reply_text(f"{headline}\n{_today_line(user['id'])}",
+                                    reply_markup=_keyboard(_clock_buttons(state)))
+
+
+async def cmd_jornada(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Today's and this month's hours, as recorded."""
+    from datetime import date
+
+    from src import timeclock
+
+    user = await _gate(update)
+    if user is None or not user.get("id"):
+        return
+    start, _ = timeclock.month_bounds(date.today().year, date.today().month)
+    month = sum(d.hours for d in timeclock.days(user["id"], start, date.today()))
+    await update.message.reply_text(
+        f"{_today_line(user['id'])}\nEste mes llevas {timeclock.hhmm(month)} h. "
+        "El detalle y el informe mensual, en el panel (Registro de jornada).")
+
+
+async def _on_clock_button(update: Update, kind: str) -> None:
+    from src import timeclock
+
+    query = update.callback_query
+    user = await _gate(update)
+    if user is None or not user.get("id"):
+        return
+    await query.edit_message_reply_markup(reply_markup=None)
+    try:
+        entry = timeclock.clock(user["id"], kind)
+    except timeclock.ClockError as exc:
+        state = timeclock.state(user["id"])
+        await query.message.reply_text(f"⚠️ {exc}",
+                                       reply_markup=_keyboard(_clock_buttons(state)))
+        return
+    at = entry["at"][11:16]
+    said = {"in": f"🟢 Entrada fichada a las {at}.",
+            "out": f"🔴 Salida fichada a las {at}. ¡Hasta mañana!",
+            "break_start": f"☕ Pausa desde las {at}.",
+            "break_end": f"▶️ De vuelta a las {at}."}[kind]
+    if entry.get("warning"):
+        said += f"\n⚠️ {entry['warning']}"
+    state = timeclock.state(user["id"])
+    await query.message.reply_text(
+        f"{said}\n{_today_line(user['id'])}",
+        reply_markup=_keyboard(_clock_buttons(state)) if state != "out" else None)
+
+
 _STATEMENT_SUFFIXES = (".n43", ".aeb", ".c43", ".q43", ".txt", ".csv", ".xlsx")
 
 
@@ -1526,6 +1618,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _on_pending_button(update, action, token)
         return
 
+    if data.startswith("clock:"):
+        await _on_clock_button(update, data.split(":", 1)[1])
+        return
+
     if data.startswith("bank:"):
         await _on_bank_button(update, data)
         return
@@ -1693,6 +1789,7 @@ def _bot_token() -> str | None:
 # The menu Telegram shows when "/" is typed, so nobody has to remember a command.
 _MENU = [
     ("ayuda", "Cómo hablarme y ejemplos"),
+    ("fichar", "Fichar la entrada, la pausa o la salida"),
     ("pendientes", "Facturas esperando aprobación"),
     ("factura", "El PDF de una factura emitida"),
     ("presupuestos", "Presupuestos esperando respuesta"),
@@ -1739,6 +1836,8 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("cobradas", cmd_cobrada))
     app.add_handler(CommandHandler("recordar", cmd_recordar))
     app.add_handler(CommandHandler("recurrentes", cmd_recurrentes))
+    app.add_handler(CommandHandler("fichar", cmd_fichar))
+    app.add_handler(CommandHandler("jornada", cmd_jornada))
     app.add_handler(CommandHandler("presupuestos", cmd_presupuestos))
     app.add_handler(CommandHandler("impuestos", cmd_trimestre))
     app.add_handler(CommandHandler("anular", cmd_anular))
