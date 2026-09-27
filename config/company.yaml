@@ -88,6 +88,26 @@ alerts:
   stock_schedule: "1w"
 
 # ============================================================
+#  RECORDATORIOS DE COBRO
+#  Cuando una factura lleva unos días vencida sin cobrar, se le recuerda
+#  al cliente por email, con la factura adjunta.
+# ============================================================
+collections:
+  # "ask"  → cada mañana te pregunto por Telegram, factura a factura, y tú
+  #          decides con un botón (recomendado)
+  # "auto" → se envían solos y te aviso de lo que he mandado
+  # "off"  → nunca
+  mode: "ask"
+  first_after_days: 3      # días de retraso antes del primer recordatorio
+  repeat_every_days: 7     # días entre un recordatorio y el siguiente
+  max_reminders: 3         # después, ya no insisto
+  subject_template: "Recordatorio de pago — factura {invoice_number}"
+  # Vacío = el texto de serie. Admite {client_name} {invoice_number}
+  # {invoice_date} {due_date} {days_overdue} {total} {iban} {company_name}
+  # {company_phone} {company_email}
+  body_template: ""
+
+# ============================================================
 #  EL GESTOR
 #  Cada trimestre el bot calcula el IVA (303) y el IRPF (130) y prepara un
 #  paquete con los libros de facturas, los PDF y los tickets. Con el email

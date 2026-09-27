@@ -46,6 +46,7 @@ _WELCOME = (
     "• /anular <número> — emitir una rectificativa\n"
     "• /gasto <proveedor> <importe> — anotar una factura de proveedor\n"
     "• /pagos — qué debes y qué te deben\n"
+    "• /cobrada — marcar una factura como cobrada · /recordar — reclamar un pago\n"
     "• /trimestre — el IVA y el IRPF del trimestre, y el paquete para el gestor\n"
     "• /stock — qué tienes en stock (se descuenta solo al facturar)\n"
     "• /producto — dar de alta un producto · /entrada — te ha llegado material"
@@ -649,6 +650,76 @@ async def _on_tax_button(update: Update, action: str, period: str) -> None:
         await status.edit_text(("📧 " if sent else "⚠️ ") + message)
 
 
+async def cmd_cobrada(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/cobrada <número>: a client paid. Alone: what is unpaid, each with a button."""
+    if await _gate(update, "receivables.manage") is None:
+        return
+    config = get_config()
+    if context.args:
+        number = context.args[0].strip()
+        try:
+            store.mark_paid(number)
+        except KeyError:
+            await update.message.reply_text(f"No encuentro la factura {number}.")
+            return
+        await update.message.reply_text(f"✅ Factura {number} marcada como cobrada.")
+        return
+
+    unpaid = store.list_unpaid()
+    if not unpaid:
+        await update.message.reply_text("No tienes nada pendiente de cobro. 🎉")
+        return
+    await update.message.reply_text(
+        f"Tienes {len(unpaid)} factura(s) sin cobrar. Toca la que ya te hayan pagado:")
+    for record in unpaid[:10]:
+        inv = record["invoice"]
+        late = (f" · {record['days_overdue']} día(s) de retraso"
+                if record["days_overdue"] > 0 else "")
+        await update.message.reply_text(
+            f"{inv.invoice_number} — {inv.client_name}: "
+            f"{format_money(compute_totals(inv, config)[2], config)}{late}",
+            reply_markup=_keyboard([("✅ Cobrada", f"dun:paid:{inv.invoice_number}")]))
+
+
+async def cmd_recordar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/recordar <número>: email the client a payment reminder now."""
+    from src import payment_reminders
+
+    if await _gate(update, "receivables.manage") is None:
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Uso: `/recordar <número de factura>`\nEjemplo: `/recordar 2026-0007`",
+            parse_mode="Markdown")
+        return
+    sent, message = await asyncio.to_thread(payment_reminders.send,
+                                            context.args[0].strip())
+    await update.message.reply_text(("📧 " if sent else "⚠️ ") + message)
+
+
+async def _on_dunning_button(update: Update, action: str, number: str) -> None:
+    from src import payment_reminders
+
+    query = update.callback_query
+    if await _gate(update, "receivables.manage") is None:
+        return
+    await query.edit_message_reply_markup(reply_markup=None)
+    if action == "send":
+        sent, message = await asyncio.to_thread(payment_reminders.send, number)
+        await query.message.reply_text(("📧 " if sent else "⚠️ ") + message)
+    elif action == "paid":
+        try:
+            store.mark_paid(number)
+            await query.message.reply_text(f"✅ Factura {number} marcada como cobrada.")
+        except KeyError:
+            await query.message.reply_text(f"No encuentro la factura {number}.")
+    elif action == "stop":
+        payment_reminders.pause(number)
+        await query.message.reply_text(
+            f"⏸ Vale, no le recordaré más la factura {number}. "
+            "Puedes volver a activarlo desde el panel (Cobros).")
+
+
 async def cmd_factura(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/factura <número>: the PDF of an issued invoice. Without a number: the latest ones."""
     if await _gate(update, "invoices.view") is None:
@@ -1078,6 +1149,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _on_pending_button(update, action, token)
         return
 
+    if data.startswith("dun:"):
+        _, action, number = (data.split(":", 2) + ["", ""])[:3]
+        await _on_dunning_button(update, action, number)
+        return
+
     if data.startswith("tax:"):
         _, action, period = (data.split(":", 2) + ["", ""])[:3]
         await _on_tax_button(update, action, period)
@@ -1228,6 +1304,7 @@ _MENU = [
     ("ayuda", "Cómo hablarme y ejemplos"),
     ("pendientes", "Facturas esperando aprobación"),
     ("factura", "El PDF de una factura emitida"),
+    ("cobrada", "Marcar una factura como cobrada"),
     ("trimestre", "IVA e IRPF del trimestre, y el paquete para el gestor"),
     ("pagos", "Qué debes y qué te deben"),
     ("clientes", "Clientes guardados"),
@@ -1265,6 +1342,9 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("facturas", cmd_factura))
     app.add_handler(CommandHandler("reenviar", cmd_reenviar))
     app.add_handler(CommandHandler("trimestre", cmd_trimestre))
+    app.add_handler(CommandHandler("cobrada", cmd_cobrada))
+    app.add_handler(CommandHandler("cobradas", cmd_cobrada))
+    app.add_handler(CommandHandler("recordar", cmd_recordar))
     app.add_handler(CommandHandler("impuestos", cmd_trimestre))
     app.add_handler(CommandHandler("anular", cmd_anular))
     app.add_handler(CommandHandler("gasto", cmd_gasto))

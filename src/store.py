@@ -142,6 +142,10 @@ def _issued_payload(conn, row) -> dict:
         "due_date": row["due_date"],
         "email_sent_at": row["email_sent_at"],
         "email_error": row["email_error"],
+        "reminder_count": row["reminder_count"] or 0,
+        "last_reminder_at": row["last_reminder_at"],
+        "reminder_prompted_at": row["reminder_prompted_at"],
+        "reminders_paused": bool(row["reminders_paused"]),
         "invoice": _row_to_invoice(conn, row),
     }
 

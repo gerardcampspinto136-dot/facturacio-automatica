@@ -112,6 +112,19 @@ class CompanyConfig:
         # The hour of the morning the reminders go out (never after 21:00).
         self.alert_hour = min(max(int(alerts.get("hour", 9) or 9), 0), 20)
 
+        # ── Chasing unpaid invoices ──────────────────────────────────────────
+        collections = data.get("collections", {}) or {}
+        # "ask": the owner is asked on Telegram before each reminder goes out;
+        # "auto": they go out on their own; "off": never.
+        mode = str(collections.get("mode", "ask") or "ask").strip().lower()
+        self.collections_mode = mode if mode in ("ask", "auto", "off") else "ask"
+        self.collections_first_after = int(collections.get("first_after_days", 3))
+        self.collections_every = max(int(collections.get("repeat_every_days", 7)), 1)
+        self.collections_max = max(int(collections.get("max_reminders", 3)), 1)
+        self.collections_subject = collections.get(
+            "subject_template", "Recordatorio de pago — factura {invoice_number}")
+        self.collections_body = collections.get("body_template", "") or ""
+
         # ── The gestor ───────────────────────────────────────────────────────
         # Who receives the quarter's pack (invoice books, PDFs, receipts).
         self.gestor_email = str((data.get("gestor", {}) or {}).get("email", "") or "")
@@ -154,6 +167,8 @@ class CompanyConfig:
         take("phone")
         take("invoice_email", "email")
         take("gestor_email")
+        if company.get("collections_mode") in ("ask", "auto", "off"):
+            self.collections_mode = company["collections_mode"]
         take("iban", "bank_account")
         take("tax_rate", cast=float)
         take("irpf_rate", cast=float)

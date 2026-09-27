@@ -657,6 +657,18 @@ async def company_settings(request: Request, company_id: int):
         + f"<option value='0'{'' if inclusive else ' selected'}>No — el IVA se suma aparte</option>"
         + f"<option value='1'{' selected' if inclusive else ''}>Sí — el precio ya lleva IVA</option>"
         + "</select>"
+        + "<label>Recordatorios de cobro a clientes que no pagan</label>"
+        + "<select name='collections_mode' style='width:100%;padding:8px'>"
+        + "".join(
+            f"<option value='{value}'"
+            f"{' selected' if (company.get('collections_mode') or 'ask') == value else ''}>"
+            f"{text}</option>"
+            for value, text in (
+                ("ask", "Preguntarme por Telegram antes de cada uno (recomendado)"),
+                ("auto", "Enviarlos solos y avisarme"),
+                ("off", "No enviar recordatorios"),
+            ))
+        + "</select>"
         # Who may send without a second pair of eyes is a per-person permission now
         # ("Aprobar y enviar facturas" in Equipo), which is what a company with staff
         # actually needs. A company-wide switch here did nothing and has gone.
@@ -729,6 +741,8 @@ async def company_settings_save(request: Request, company_id: int):
     values["prices_include_tax"] = 1 if form.get("prices_include_tax") == "1" else 0
     if values.get("review_mode") not in ("manual", "auto"):
         values.pop("review_mode", None)
+    if values.get("collections_mode") not in ("ask", "auto", "off"):
+        values.pop("collections_mode", None)
     if "invoice_series" in values:
         from src.invoice_number import clean_series
 

@@ -265,6 +265,12 @@ _ADDED_COLUMNS = {
         # Whether the email to the client actually went out, and why not if it did not.
         ("email_sent_at", "TEXT"),
         ("email_error", "TEXT"),
+        # Chasing an unpaid invoice: how many reminders went out, when the owner was
+        # last asked about sending one, and whether they said to stop.
+        ("reminder_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_reminder_at", "TEXT"),
+        ("reminder_prompted_at", "TEXT"),
+        ("reminders_paused", "INTEGER NOT NULL DEFAULT 0"),
     ],
     # Everything the admin panel needs to set up a client without editing YAML. Added
     # here rather than in CREATE TABLE so an installation that already has companies
@@ -286,6 +292,8 @@ _ADDED_COLUMNS = {
         ("irpf_rate", "REAL"),
         # Where the quarter's pack goes: the company's gestor or accountant.
         ("gestor_email", "TEXT"),
+        # ask / auto / off: how overdue invoices are chased.
+        ("collections_mode", "TEXT"),
     ],
     # What was agreed with each client and should not have to be said twice: whether
     # their invoices carry an IRPF withholding (NULL = the company default).

@@ -1380,23 +1380,44 @@ async def receivables_page(request: Request):
     rows = []
     for u in unpaid:
         inv = u["invoice"]
+        number = html.escape(inv.invoice_number or "")
         if u["days_overdue"] > 0:
             when = (f"<span class='badge badge-danger'>{u['days_overdue']} día(s) "
                     f"de retraso</span>")
         else:
             when = f"<span class='muted'>vence el {u['due_date']}</span>"
-        button = ""
+
+        chasing = ""
+        if u["reminder_count"]:
+            last = (u["last_reminder_at"] or "")[:10]
+            chasing = (f"<div class='muted'>recordada {u['reminder_count']} vez/veces"
+                       f"{f' · última el {last}' if last else ''}</div>")
+        if u["reminders_paused"]:
+            chasing += "<div class='muted'>⏸ sin recordatorios</div>"
+
+        buttons = []
         if may_manage:
-            button = (
-                f"<form method='post' action='/receivables/"
-                f"{html.escape(inv.invoice_number)}/paid'>"
+            buttons.append(
+                f"<form method='post' action='/receivables/{number}/paid'>"
                 f"<button class='btn-primary btn-sm'>Marcar cobrada</button></form>")
+            if inv.client_email and u["days_overdue"] > 0:
+                buttons.append(
+                    f"<form method='post' action='/receivables/{number}/remind' "
+                    f"onsubmit=\"return confirm('¿Mandar a {html.escape(inv.client_email)}"
+                    f" un recordatorio de pago con la factura adjunta?')\">"
+                    f"<button class='btn-neutral btn-sm'>Recordar</button></form>")
+            toggle = "resume" if u["reminders_paused"] else "pause"
+            buttons.append(
+                f"<form method='post' action='/receivables/{number}/{toggle}'>"
+                f"<button class='btn-neutral btn-sm'>"
+                f"{'Reanudar recordatorios' if toggle == 'resume' else 'No insistir'}"
+                f"</button></form>")
         rows.append(
-            f"<tr><td class='strong'>{html.escape(inv.invoice_number or '')}</td>"
-            f"<td>{html.escape(inv.client_name or '')}</td>"
+            f"<tr><td class='strong'>{number}</td>"
+            f"<td>{html.escape(inv.client_name or '')}{chasing}</td>"
             f"<td>{when}</td>"
             f"<td class='num total'>{_money(_totals(inv)[2])}</td>"
-            f"<td><div class='actions'>{button}</div></td></tr>"
+            f"<td><div class='actions'>{''.join(buttons)}</div></td></tr>"
         )
 
     table = (
@@ -1417,6 +1438,44 @@ async def receivables_paid(request: Request, number: str):
     if refusal:
         return refusal
     store.mark_paid(number)
+    return RedirectResponse("/receivables", status_code=303)
+
+
+@app.post("/receivables/{number}/remind")
+async def receivables_remind(request: Request, number: str):
+    from src import payment_reminders
+
+    user, refusal = _guard(request, "receivables.manage")
+    if refusal:
+        return refusal
+    sent, message = await asyncio.to_thread(payment_reminders.send, number)
+    if not sent:
+        return _page("No se ha enviado",
+                     f"<div class='card'>{html.escape(message)}<div class='actions'>"
+                     "<a class='btn btn-neutral' href='/receivables'>Volver</a></div></div>",
+                     user)
+    return RedirectResponse("/receivables", status_code=303)
+
+
+@app.post("/receivables/{number}/pause")
+async def receivables_pause(request: Request, number: str):
+    from src import payment_reminders
+
+    _user_, refusal = _guard(request, "receivables.manage")
+    if refusal:
+        return refusal
+    payment_reminders.pause(number)
+    return RedirectResponse("/receivables", status_code=303)
+
+
+@app.post("/receivables/{number}/resume")
+async def receivables_resume(request: Request, number: str):
+    from src import payment_reminders
+
+    _user_, refusal = _guard(request, "receivables.manage")
+    if refusal:
+        return refusal
+    payment_reminders.resume(number)
     return RedirectResponse("/receivables", status_code=303)
 
 
