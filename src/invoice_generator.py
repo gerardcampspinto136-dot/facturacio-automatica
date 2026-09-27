@@ -99,11 +99,15 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
 
     # ── Invoice title + number ───────────────────────────────────────────────
     title_text = "FACTURA RECTIFICATIVA" if invoice.rectifies else "FACTURA"
+    # A draft waiting for approval has no number yet -- it is assigned on approval so a
+    # discarded draft leaves no gap -- and must not look like an issued invoice.
+    number_text = (f"N.º {invoice.invoice_number}" if invoice.invoice_number
+                   else "BORRADOR — sin número")
     title_row = Table(
         [[
             Paragraph(f"<b>{title_text}</b>", _style("InvTitle", fontSize=22, textColor=BRAND_DARK)),
             Paragraph(
-                f"<b>N.º {invoice.invoice_number}</b>",
+                f"<b>{number_text}</b>",
                 _style("InvNum", fontSize=13, alignment=TA_RIGHT, textColor=BRAND_DARK),
             ),
         ]],

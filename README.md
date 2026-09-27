@@ -12,18 +12,30 @@ A Telegram bot that turns a voice message into a complete invoice:
 It also tracks the money going the other way: photograph a supplier invoice or a till
 receipt and it is read and filed as an expense (see **Expenses** below).
 
-## Review modes
+## The bot is private
 
-Set `review.mode` in `config/company.yaml`:
+The bot only answers people it knows:
 
-- **`auto`** — the invoice is generated and **sent to the client immediately**, at your own risk.
-  If something is wrong, cancel it afterwards with a contra invoice (`/anular <número>`).
-- **`manual`** (default) — each invoice is held in a **pending queue** with a draft PDF; the
-  sequential number is **not** consumed yet (so cancelled drafts never leave gaps). On a schedule you
-  choose (`review.notify.schedule`: `1d`, `3d`, `1w`, `2w…`) the reviewer gets a **Telegram and/or
-  email** notification with a link to a **web page** where they sign in with their Google account and
-  **approve, edit, or reject** each invoice. Only on approval is the number assigned, the invoice
-  logged, and the email sent.
+- **The owner's chat** — `TELEGRAM_CHAT_ID` in `.env`, or *Chat de avisos* in the admin
+  panel. Full access. Send `/chatid` to the bot to find the number.
+- **Anyone who connected their Telegram** from the web panel (*Mi cuenta → Conectar
+  Telegram*, or the owner does it for them from *Equipo*). They get a one-time link — or a QR
+  to scan with the phone — and from then on the bot applies **exactly their account's
+  permissions**: an employee who may only see stock cannot list clients or read `/pagos`.
+
+Everyone else gets *"Este asistente es privado"* and the owner is told, once, who tried.
+
+## Who may send an invoice
+
+Decided **per person**, by the permission *Aprobar y enviar facturas* (Equipo):
+
+- **With it** — after checking the summary in the chat, *✅ Enviar* issues and emails it.
+  *💾 Guardar sin enviar* keeps it in `/pendientes` for later.
+- **Without it** — the button is *📤 Mandar a revisión*. The draft goes to everyone who
+  can approve, **as a PDF on their phone with ✅ Aprobar / ❌ Descartar buttons**; whoever
+  prepared it is told the outcome. It can also be approved from the web (*Pendientes*).
+
+A draft consumes **no number** until it is approved, so discarded drafts never leave gaps.
 
 ### Contra / rectifying invoices (facturas rectificativas)
 
@@ -154,7 +166,7 @@ Checklist per client:
 2. Fill in `config/company.yaml`: name, CIF, address, phone, email, IBAN, VAT rate
 3. `config/logo.png` — drop in their artwork, or run `py generate_logo.py` to get a
    placeholder built from the details in step 2
-4. `review.reviewers` — the emails allowed into the web review page
+4. Accounts for their staff — the owner adds them in `/team`, and each one connects their Telegram from *Mi cuenta*
 5. Issue one invoice and confirm the red PRUEBA banner is gone
 
 ## Quick start
@@ -208,7 +220,7 @@ The review page authenticates reviewers with **Google Sign-In**:
    `http://localhost:8000/auth/callback`).
 3. Put the client id/secret in `.env` as `WEB_OAUTH_CLIENT_ID` / `WEB_OAUTH_CLIENT_SECRET`, and set a
    long random `SESSION_SECRET`.
-4. List the allowed reviewer emails under `review.reviewers` in `config/company.yaml`.
+4. Who may sign in is decided by the accounts in the panel (`/admin`, `/team`), not by a list in a file.
 
 **Reviewing from your phone:** the local server must be reachable at a public URL. Run a tunnel, e.g.
 `cloudflared tunnel --url http://localhost:8000`, then set `review.web.base_url` (and the OAuth

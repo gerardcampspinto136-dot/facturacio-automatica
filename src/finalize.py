@@ -11,6 +11,7 @@ rather than a consumed number with nothing behind it.
 """
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from src import catalog, store
@@ -23,6 +24,18 @@ from src.sheets import add_invoice_to_sheet
 logger = logging.getLogger(__name__)
 
 _DRAFT_MARKERS = {None, "", "BORRADOR"}
+
+# Where invoice PDFs live. Module-level so the tests can point them somewhere else.
+INVOICES_DIR = Path("data/invoices")
+DRAFTS_DIR = INVOICES_DIR / "borradores"
+
+
+def draft_path(token: str) -> str:
+    return str(DRAFTS_DIR / f"Borrador_{token}.pdf")
+
+
+def invoice_path(number: str) -> str:
+    return str(INVOICES_DIR / f"Factura_{number}.pdf")
 
 
 def finalize_invoice(invoice: InvoiceData, token: Optional[str] = None) -> str:
@@ -38,7 +51,7 @@ def finalize_invoice(invoice: InvoiceData, token: Optional[str] = None) -> str:
         store.approve_pending(token, invoice.invoice_number)
     store.record_issued(invoice)
 
-    pdf_path = f"data/invoices/Factura_{invoice.invoice_number}.pdf"
+    pdf_path = invoice_path(invoice.invoice_number)
     generate_invoice_pdf(invoice, pdf_path)
 
     try:

@@ -1,7 +1,8 @@
-"""Entry point for the Invoice Bot.
+"""Entry point: the Telegram bot, the web panel and the reminder scheduler, together.
 
-In review ("manual") mode it also starts the web review app and the pending-invoice
-reminder scheduler alongside the Telegram bot. In "auto" mode only the bot runs.
+All three always run. The web panel used to start only in "manual" review mode, which
+left an "auto" installation with no panel to manage accounts in and -- worse -- with no
+money or stock reminders at all, since the scheduler was tied to the same switch.
 """
 
 import logging
@@ -28,7 +29,7 @@ def _start_web(cfg) -> None:
     # Not the main thread → don't let uvicorn install signal handlers.
     server.install_signal_handlers = lambda: None
     threading.Thread(target=server.run, daemon=True).start()
-    logger.info("Web review app running at %s", cfg.web_base_url)
+    logger.info("Web panel running at %s", cfg.web_base_url)
 
 
 if __name__ == "__main__":
@@ -47,12 +48,9 @@ if __name__ == "__main__":
             imported["pending"], imported["issued"],
         )
 
-    if cfg.review_mode == "manual":
-        _start_web(cfg)
-        from src.scheduler import start_scheduler
+    _start_web(cfg)
+    from src.scheduler import start_scheduler
 
-        start_scheduler()
-    else:
-        logger.info("Review mode is 'auto' — invoices will be sent immediately.")
+    start_scheduler()
 
     run_bot()

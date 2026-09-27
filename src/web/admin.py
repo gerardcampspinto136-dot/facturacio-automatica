@@ -1,11 +1,12 @@
-"""The two account panels.
+"""The account panels.
 
+`/me`    — anyone's own account: what they may do, and connecting their Telegram.
 `/team`  — a client's own owner managing their staff: who works here, what each of them
            may do, and taking access away when someone leaves.
 `/admin` — the vendor managing client companies: creating one with its first owner, and
            suspending a company without destroying anything it owns.
 
-Both render with the same helpers as the rest of the site. Importing this module
+All render with the same helpers as the rest of the site. Importing this module
 registers its routes on the FastAPI app in src/web/app.py.
 """
 
@@ -16,6 +17,143 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from src import accounts
 from src.web.app import _empty, _guard, _page, app
+
+
+# ── Connecting a Telegram account ────────────────────────────────────────────
+
+def _qr_svg(text: str, size: int = 168) -> str:
+    """A QR code as inline SVG, drawn with ReportLab so no extra library is needed.
+
+    On a computer the pairing link is useless as a link -- Telegram is on the phone --
+    so the page shows it as a code to scan with the phone's camera.
+    """
+    from reportlab.graphics import renderSVG
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+
+    widget = QrCodeWidget(text)
+    x0, y0, x1, y1 = widget.getBounds()
+    drawing = Drawing(size, size, transform=[size / (x1 - x0), 0, 0,
+                                             size / (y1 - y0), 0, 0])
+    drawing.add(widget)
+    svg = renderSVG.drawToString(drawing)
+    return svg[svg.find("<svg"):]
+
+
+def _telegram_link_block(code: str, for_whom: str = "") -> str:
+    """The pairing link, as a tappable link, a QR code and a typed fallback."""
+    from src import telegram_api
+
+    username = telegram_api.bot_username()
+    hours = accounts.TELEGRAM_CODE_HOURS
+    fallback = (f"<p class='muted'>Si el enlace no funciona, abre el bot en Telegram y "
+                f"escríbele: <code>/start {html.escape(code)}</code></p>")
+    if not username:
+        return (f"<div class='notice notice-ok'><b>Código de conexión{for_whom}: "
+                f"{html.escape(code)}</b>Abre el bot de la empresa en Telegram y "
+                f"escríbele <code>/start {html.escape(code)}</code>. "
+                f"Caduca en {hours} horas y solo sirve una vez.</div>")
+    link = f"https://t.me/{username}?start={code}"
+    return (
+        "<div class='notice notice-ok'>"
+        f"<b>Enlace de conexión{for_whom} listo</b>"
+        "<div class='row' style='margin-top:10px'>"
+        "<div style='flex:1;min-width:220px'>"
+        "<p>Desde el móvil: toca el enlace y pulsa <b>Iniciar</b> en Telegram.<br>"
+        "Desde el ordenador: escanea el código con la cámara del móvil.</p>"
+        f"<p><a class='btn btn-primary' href='{html.escape(link)}'>Abrir en Telegram</a></p>"
+        f"<p class='muted'>Caduca en {hours} horas y solo sirve una vez. "
+        "Puedes mandárselo por WhatsApp.</p>"
+        f"<p class='muted' style='word-break:break-all'>{html.escape(link)}</p>"
+        f"{fallback}</div>"
+        f"<div style='background:#fff;padding:8px;border-radius:8px'>{_qr_svg(link)}</div>"
+        "</div></div>"
+    )
+
+
+def _telegram_status(member: dict) -> str:
+    if member.get("telegram_id"):
+        who = (f"@{html.escape(member['telegram_username'])}"
+               if member.get("telegram_username") else "conectado")
+        return f"<span class='badge badge-ok'>Telegram {who}</span>"
+    return "<span class='badge badge-muted'>sin Telegram</span>"
+
+
+@app.get("/me", response_class=HTMLResponse)
+async def me(request: Request):
+    user, refusal = _guard(request)
+    if refusal:
+        return refusal
+    return _me_page(user)
+
+
+def _me_page(user: dict, code: str = "") -> HTMLResponse:
+    company = user.get("company_name") or ("Proveedor del software"
+                                           if user["role"] == accounts.SUPERADMIN else "")
+    profile = (
+        "<div class='card'><div class='card-title'>"
+        f"{html.escape(user.get('name') or user['email'])} {_role_badge(user)}</div>"
+        f"<div class='muted'>{html.escape(user['email'])}"
+        + (f" · {html.escape(company)}" if company else "") + "</div></div>"
+    )
+
+    if not user.get("id"):
+        telegram = ("<div class='card'><b>Telegram</b><p class='muted'>Estás en modo "
+                    "desarrollo sin una cuenta real, así que no hay nada que conectar."
+                    "</p></div>")
+    elif user.get("telegram_id"):
+        handle = (f" como <b>@{html.escape(user['telegram_username'])}</b>"
+                  if user.get("telegram_username") else "")
+        telegram = (
+            "<div class='card'><div class='card-title'>Telegram</div>"
+            f"<p>✅ Tu Telegram está conectado{handle}. El bot te reconoce y puedes "
+            "hacer desde el móvil lo mismo que aquí.</p>"
+            "<form method='post' action='/me/telegram/unlink' "
+            "onsubmit=\"return confirm('¿Desconectar tu Telegram?')\">"
+            "<button class='btn-neutral btn-sm'>Desconectar</button></form></div>"
+        )
+    else:
+        telegram = (
+            "<div class='card'><div class='card-title'>Conecta tu Telegram</div>"
+            "<div class='card-hint'>Para dictar facturas por audio, mandar fotos de "
+            "tickets y aprobar facturas desde el móvil. El bot es privado: solo "
+            "responde a quien ha conectado su cuenta aquí.</div>"
+            + (_telegram_link_block(code) if code else
+               "<form method='post' action='/me/telegram'>"
+               "<button class='btn-primary'>Conectar Telegram</button></form>")
+            + "</div>"
+        )
+
+    granted = accounts.effective_permissions(user)
+    labels = [label for key, (_, label) in accounts.PERMISSIONS.items() if key in granted]
+    perms = ("<div class='card'><div class='card-title'>Lo que puedes hacer</div>"
+             + ("<ul style='margin:6px 0 0 18px;padding:0'>"
+                + "".join(f"<li>{html.escape(label)}</li>" for label in labels)
+                + "</ul>" if labels else "<p class='muted'>Nada todavía. Pide permisos "
+                                         "a tu responsable.</p>")
+             + "</div>")
+    return _page("Mi cuenta", profile + telegram + perms, user, current="/me")
+
+
+@app.post("/me/telegram", response_class=HTMLResponse)
+async def me_telegram(request: Request):
+    user, refusal = _guard(request)
+    if refusal:
+        return refusal
+    if not user.get("id"):
+        return RedirectResponse("/me", status_code=303)
+    code = accounts.create_telegram_code(user["id"])
+    return _me_page(accounts.load_context(user["id"]), code)
+
+
+@app.post("/me/telegram/unlink")
+async def me_telegram_unlink(request: Request):
+    user, refusal = _guard(request)
+    if refusal:
+        return refusal
+    if user.get("id"):
+        accounts.unlink_telegram(user["id"])
+    return RedirectResponse("/me", status_code=303)
 
 _LAST_ADMIN_WARNING = (
     "<div class='card'><b>Es la única cuenta de responsable que queda.</b>"
@@ -94,7 +232,7 @@ async def team(request: Request):
             f"<tr><td><div class='strong'>"
             f"{html.escape(member['name'] or member['email'])}</div>"
             f"<span class='muted'>{html.escape(member['email'])}</span></td>"
-            f"<td>{_role_badge(member)}{state}</td>"
+            f"<td>{_role_badge(member)}{state} {_telegram_status(member)}</td>"
             f"<td class='muted'>{html.escape(_describe(member))}</td>"
             f"<td>{manage}</td></tr>"
         )
@@ -164,6 +302,57 @@ async def team_edit(request: Request, user_id: int):
     if target is None or not accounts.may_manage(user, target):
         return _error(user, "No disponible",
                       "No puedes gestionar esa cuenta.", "/team")
+    return _team_edit_page(user, target)
+
+
+def _team_telegram_card(target: dict, code: str = "") -> str:
+    """Connecting a staff member's Telegram for them, for staff who never use the web."""
+    uid = target["id"]
+    if target.get("telegram_id"):
+        return (
+            "<div class='card'><b>Telegram</b>"
+            f"<p>{_telegram_status(target)} El bot le reconoce con estos mismos "
+            "permisos.</p>"
+            f"<form method='post' action='/team/{uid}/telegram/unlink' "
+            "onsubmit=\"return confirm('¿Desconectar su Telegram?')\">"
+            "<button class='btn-neutral btn-sm'>Desconectar</button></form></div>"
+        )
+    return (
+        "<div class='card'><b>Telegram</b>"
+        "<p class='muted'>Todavía no ha conectado su Telegram. Puede hacerlo él mismo "
+        "desde «Mi cuenta», o puedes generarle aquí un enlace y mandárselo.</p>"
+        + (_telegram_link_block(code, " para esta persona") if code else
+           f"<form method='post' action='/team/{uid}/telegram'>"
+           "<button class='btn-neutral btn-sm'>Generar enlace de Telegram</button></form>")
+        + "</div>"
+    )
+
+
+@app.post("/team/{user_id}/telegram", response_class=HTMLResponse)
+async def team_telegram(request: Request, user_id: int):
+    user, refusal = _guard(request, "users.manage")
+    if refusal:
+        return refusal
+    target = accounts.get_user(user_id)
+    if target is None or not accounts.may_manage(user, target):
+        return RedirectResponse("/team", status_code=303)
+    code = accounts.create_telegram_code(user_id)
+    return _team_edit_page(user, accounts.get_user(user_id), code)
+
+
+@app.post("/team/{user_id}/telegram/unlink")
+async def team_telegram_unlink(request: Request, user_id: int):
+    user, refusal = _guard(request, "users.manage")
+    if refusal:
+        return refusal
+    target = accounts.get_user(user_id)
+    if target is not None and accounts.may_manage(user, target):
+        accounts.unlink_telegram(user_id)
+    return RedirectResponse(f"/team/{user_id}", status_code=303)
+
+
+def _team_edit_page(user: dict, target: dict, code: str = "") -> HTMLResponse:
+    user_id = target["id"]
 
     if target["role"] == accounts.EMPLOYEE:
         perms = f"<label>Puede…</label>{_permission_checkboxes(target['permissions'])}"
@@ -188,6 +377,8 @@ async def team_edit(request: Request, user_id: int):
         f"{perms}"
         f"<div class='actions'><button class='btn-primary'>Guardar</button>"
         f"<a class='btn btn-neutral' href='/team'>Cancelar</a></div></div></form>"
+
+        + _team_telegram_card(target, code) +
 
         f"<form method='post' action='/team/{user_id}/active' "
         f"onsubmit=\"return confirm('¿Seguro?')\"><div class='card'>"
@@ -435,7 +626,6 @@ async def company_settings(request: Request, company_id: int):
     )
 
     inclusive = bool(company.get("prices_include_tax"))
-    manual = (company.get("review_mode") or "manual") == "manual"
 
     body = (
         banner +
@@ -464,11 +654,13 @@ async def company_settings(request: Request, company_id: int):
         + f"<option value='0'{'' if inclusive else ' selected'}>No — el IVA se suma aparte</option>"
         + f"<option value='1'{' selected' if inclusive else ''}>Sí — el precio ya lleva IVA</option>"
         + "</select>"
-        + "<label>¿Las facturas se revisan antes de enviarse?</label>"
-        + "<select name='review_mode' style='width:100%;padding:8px'>"
-        + f"<option value='manual'{' selected' if manual else ''}>Sí — quedan pendientes de aprobar</option>"
-        + f"<option value='auto'{'' if manual else ' selected'}>No — se envían al momento</option>"
-        + "</select>"
+        # Who may send without a second pair of eyes is a per-person permission now
+        # ("Aprobar y enviar facturas" in Equipo), which is what a company with staff
+        # actually needs. A company-wide switch here did nothing and has gone.
+        + "<p class='muted' style='margin-top:14px'>¿Quién puede enviar facturas sin "
+          "revisión? Se decide por persona en <b>Equipo</b> (permiso «Aprobar y enviar "
+          "facturas»). Lo que prepare alguien sin ese permiso queda pendiente hasta que "
+          "lo apruebe un responsable, desde el panel o con un toque en Telegram.</p>"
         + "</div>"
 
         "<div class='card'><b>Su bot de Telegram</b>"
@@ -480,6 +672,10 @@ async def company_settings(request: Request, company_id: int):
         + _field("Chat de avisos", "telegram_chat_id",
                  company.get("telegram_chat_id"),
                  "el /chatid que dice el bot")
+        + "<p class='muted'>El bot es privado. Este chat es el del responsable y tiene "
+          "acceso completo; el resto del equipo entra conectando su propio Telegram "
+          "desde «Mi cuenta», con los permisos de su cuenta. A cualquier otra persona "
+          "el bot no le responde.</p>"
         + "</div>"
 
         "<div class='card'><b>Marca</b>"

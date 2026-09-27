@@ -215,6 +215,10 @@ def connect() -> sqlite3.Connection:
 _ADDED_COLUMNS = {
     "invoices": [
         ("prices_include_tax", "INTEGER"),
+        # Who prepared a draft that is waiting for approval, and where to tell them.
+        ("created_by", "INTEGER"),
+        ("created_by_name", "TEXT"),
+        ("created_chat_id", "INTEGER"),
     ],
     # Everything the admin panel needs to set up a client without editing YAML. Added
     # here rather than in CREATE TABLE so an installation that already has companies
@@ -234,7 +238,24 @@ _ADDED_COLUMNS = {
         ("logo_path", "TEXT"),
         ("configured_at", "TEXT"),
     ],
+    # A Telegram account linked to a panel account, so the bot applies the same
+    # permissions the web does. The code is a one-time pairing secret with an expiry.
+    "users": [
+        ("telegram_id", "INTEGER"),
+        ("telegram_username", "TEXT"),
+        ("telegram_code", "TEXT"),
+        ("telegram_code_expires", "TEXT"),
+    ],
 }
+
+# Statements that depend on the columns above, so they can only run once those exist.
+# An index on a column an old database does not have yet would fail in SCHEMA.
+_AFTER_UPGRADE = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram
+    ON users (telegram_id) WHERE telegram_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram_code
+    ON users (telegram_code) WHERE telegram_code IS NOT NULL;
+"""
 
 
 def _upgrade(conn: sqlite3.Connection) -> None:
@@ -243,6 +264,7 @@ def _upgrade(conn: sqlite3.Connection) -> None:
         for name, decl in columns:
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    conn.executescript(_AFTER_UPGRADE)
 
 
 def close() -> None:

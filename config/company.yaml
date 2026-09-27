@@ -9,8 +9,10 @@
 #    company.*            sus datos fiscales (salen en cada factura)
 #    invoice.tax_rate     21 general, pero hay quien factura al 10 o al 4
 #    invoice.bank_account su IBAN — va impreso en el PDF
-#    review.reviewers     quién puede aprobar facturas en la web
 #    logo                 config/logo.png
+#
+#  Quién entra en la web y en el bot, y qué puede hacer cada uno, ya no
+#  se configura aquí: son las cuentas del panel (/admin y /team).
 #
 #  Mientras no estén puestos, las facturas salen marcadas como PRUEBA.
 # ============================================================
@@ -47,13 +49,9 @@ required_fields:
   client_address: false  # recomendable, pero no lo exigimos por defecto
 
 review:
-  # "auto"   → la factura se envía al cliente inmediatamente (a tu propio riesgo;
-  #            corrige con una factura rectificativa si algo falla).
-  # "manual" → la factura queda pendiente de revisión en la página web antes de enviarse.
-  mode: "manual"
-  # Emails autorizados a iniciar sesión en la página de revisión.
-  reviewers:
-    - "gerardcampspinto@gmail.com"
+  # Quién puede enviar una factura sin que la revise otro se decide por persona, en
+  # el panel (Equipo → permiso «Aprobar y enviar facturas»). Lo que dicte alguien sin
+  # ese permiso queda pendiente y le llega al responsable con un botón para aprobarla.
   notify:
     channels: ["telegram"]     # dónde avisar: "telegram", "email" o ambos
     schedule: "1d"             # cada cuánto recordar las facturas pendientes: 1d, 3d, 1w, 2w

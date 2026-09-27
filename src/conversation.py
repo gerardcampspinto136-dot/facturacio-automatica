@@ -89,6 +89,9 @@ class Session:
     candidates: list[dict] = field(default_factory=list)
     # Set once the draft has been written to the pending queue.
     token: Optional[str] = None
+    # May the person dictating send it to the client themselves? Someone without the
+    # approval permission gets "send for review" instead of "send".
+    can_send: bool = True
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -104,9 +107,10 @@ class Session:
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
-    def start(self, invoice: InvoiceData) -> list[Reply]:
+    def start(self, invoice: InvoiceData, can_send: bool = True) -> list[Reply]:
         """Begin a new invoice from a freshly parsed dictation."""
         self.reset()
+        self.can_send = can_send
         self.invoice = invoice
         return self._resolve_client()
 
@@ -288,16 +292,27 @@ class Session:
         lines.append(summary_lines(inv, config))
         if inv.notes:
             lines.append(f"\nObservaciones: {inv.notes}")
-        lines.append(f"\n¿La envío a {inv.client_email}?")
 
-        return [Reply(
-            "\n".join(lines),
-            buttons=[
+        if self.can_send:
+            lines.append(f"\n¿La envío a {inv.client_email}?")
+            buttons = [
                 ("✅ Enviar", "approve"),
+                ("💾 Guardar sin enviar", "hold"),
                 ("🔄 Cambiar IVA", "toggle_tax"),
                 ("❌ Descartar", "cancel"),
-            ],
-        )]
+            ]
+        else:
+            # Not theirs to send: it goes to whoever can approve, who gets it on their
+            # phone with an approve button.
+            lines.append("\n¿La mando a revisión? En cuanto la apruebe un responsable "
+                         f"saldrá hacia {inv.client_email or 'el cliente'}.")
+            buttons = [
+                ("📤 Mandar a revisión", "approve"),
+                ("🔄 Cambiar IVA", "toggle_tax"),
+                ("❌ Descartar", "cancel"),
+            ]
+
+        return [Reply("\n".join(lines), buttons=buttons)]
 
     def toggle_tax(self) -> list[Reply]:
         """Flip between VAT-inclusive and VAT-on-top, recomputing from the original figures."""

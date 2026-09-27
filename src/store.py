@@ -122,6 +122,10 @@ def _pending_payload(conn, row) -> dict:
         "token": row["token"],
         "created": row["created_at"],
         "draft_path": row["draft_path"],
+        # Who prepared it, so they can be told when it is approved or thrown out.
+        "created_by": row["created_by"],
+        "created_by_name": row["created_by_name"],
+        "created_chat_id": row["created_chat_id"],
         "invoice": _row_to_invoice(conn, row),
     }
 
@@ -149,14 +153,26 @@ def _write_items(conn, invoice_id: int, invoice: InvoiceData) -> None:
 
 # ── Pending queue ────────────────────────────────────────────────────────────
 
-def add_pending(invoice: InvoiceData, draft_path: str) -> str:
-    token = uuid.uuid4().hex[:12]
+def new_token() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def add_pending(invoice: InvoiceData, draft_path: str, *, token: Optional[str] = None,
+                created_by: Optional[int] = None, created_by_name: Optional[str] = None,
+                created_chat_id: Optional[int] = None) -> str:
+    """Queue a finished draft for someone allowed to approve it. Returns its token.
+
+    It consumes no invoice number: that happens on approval, so a draft that is thrown
+    away leaves no gap in the series.
+    """
+    token = token or new_token()
     with db.transaction() as conn:
         cur = conn.execute(
             "INSERT INTO invoices "
             "(status, token, client_name, client_email, client_address, client_id, "
-            " date, notes, rectifies, prices_include_tax, contact_id, draft_path, created_at) "
-            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " date, notes, rectifies, prices_include_tax, contact_id, draft_path, "
+            " created_by, created_by_name, created_chat_id, created_at) "
+            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 token,
                 invoice.client_name,
@@ -169,6 +185,9 @@ def add_pending(invoice: InvoiceData, draft_path: str) -> str:
                 None if invoice.prices_include_tax is None else int(invoice.prices_include_tax),
                 invoice.contact_id,
                 draft_path,
+                created_by,
+                created_by_name,
+                created_chat_id,
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )

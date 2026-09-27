@@ -3,7 +3,7 @@ import logging
 import os
 import tempfile
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -12,8 +12,10 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.helpers import escape_markdown
 
-from src import bills, conversation, receipts, store
+from src import (accounts, bills, conversation, finalize, notify, receipts, store,
+                 telegram_access)
 from src.config_loader import get_config
 from src.finalize import finalize_invoice
 from src.invoice_generator import generate_invoice_pdf
@@ -38,6 +40,7 @@ _WELCOME = (
     "del proveedor: la leo y la anoto yo.\n\n"
     "Comandos:\n"
     "• /ayuda — cómo hablarme y ejemplos\n"
+    "• /pendientes — facturas esperando aprobación\n"
     "• /clientes — clientes que ya tengo guardados\n"
     "• /cancelar — descartar la factura en curso\n"
     "• /anular <número> — emitir una rectificativa\n"
@@ -65,7 +68,10 @@ _HELP = (
     "Guardo cada cliente la primera vez. Después basta con «factura para Talleres Puig» "
     "y ya sé su email y su NIF. Si hay dos con el mismo nombre, te pregunto cuál.\n\n"
     "*Para enviarla*\n"
-    "Pulsa *Enviar* o contéstame «sí, envíala». Para descartarla, «no» o /cancelar.\n\n"
+    "Pulsa *Enviar* o contéstame «sí, envíala». Para descartarla, «no» o /cancelar. "
+    "*Guardar sin enviar* la deja en /pendientes para enviarla más tarde.\n"
+    "Si tu cuenta no puede enviar facturas, el botón es *Mandar a revisión*: le llega "
+    "a tu responsable con un botón para aprobarla, y te aviso cuando lo haga.\n\n"
     "*Gastos: mándame una foto*\n"
     "Haz una foto del ticket o de la factura del proveedor y mándamela. Leo el "
     "proveedor, el número, la fecha, la base, el IVA y el total, y te lo enseño "
@@ -89,21 +95,123 @@ _HELP = (
     "`/pagos` — cobros y pagos pendientes"
 )
 
+# Shown to anyone the bot does not know. It says nothing about the company: a stranger
+# who found the bot learns only how a real employee gets in.
+_STRANGER = (
+    "🔒 Este asistente de facturación es privado.\n\n"
+    "Si trabajas en la empresa: entra en el panel web con tu cuenta de Google y pulsa "
+    "*Mi cuenta → Conectar Telegram*. Si todavía no tienes cuenta, pídesela a tu "
+    "responsable.\n\n"
+    "Tu ID de Telegram: `{uid}`"
+)
+
+
+def _md(text) -> str:
+    """Escape user-provided text for Telegram's Markdown, so a name with _ or * cannot
+    break the message it appears in."""
+    return escape_markdown(str(text or ""), version=1)
+
+
+# ── Who is talking ───────────────────────────────────────────────────────────
+
+def _who(update: Update):
+    """The account this Telegram message acts as, or None for a stranger."""
+    tg_user = update.effective_user
+    chat = update.effective_chat
+    return telegram_access.resolve(tg_user.id if tg_user else None,
+                                   chat.id if chat else None)
+
+
+def _target(update: Update):
+    """Where to answer: the message, or the message a pressed button belongs to."""
+    if update.message is not None:
+        return update.message
+    if update.callback_query is not None:
+        return update.callback_query.message
+    return None
+
+
+async def _refuse_stranger(update: Update) -> None:
+    tg_user = update.effective_user
+    uid = tg_user.id if tg_user else 0
+    target = _target(update)
+    if target is not None:
+        await target.reply_text(_STRANGER.format(uid=uid), parse_mode="Markdown")
+    if tg_user is not None:
+        # Plain HTTP to Telegram: off the event loop so other chats are not held up.
+        await asyncio.to_thread(telegram_access.report_stranger,
+                                uid, tg_user.full_name, tg_user.username)
+
+
+async def _gate(update: Update, permission: str | None = None):
+    """Resolve the caller and check one permission. Returns the account, or None.
+
+    A handler does nothing until this has returned an account: the refusal has already
+    been sent. Every handler states its permission here, the same keys the web uses,
+    so what an employee may do is one decision in one place.
+    """
+    user = _who(update)
+    if user is None:
+        await _refuse_stranger(update)
+        return None
+    if permission and not accounts.can(user, permission):
+        label = accounts.PERMISSIONS.get(permission, ("", permission))[1]
+        target = _target(update)
+        if target is not None:
+            await target.reply_text(
+                f"No tienes permiso para esto (te falta: «{label}»).\n"
+                "Si lo necesitas para tu trabajo, pídeselo a tu responsable."
+            )
+        return None
+    return user
+
+
+def _display_name(user: dict) -> str:
+    return user.get("name") or user.get("email") or "Responsable"
+
+
+# ── Simple commands ──────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/start, or /start <code> from the "Conectar Telegram" link in the panel."""
+    code = (context.args[0] if context.args else "").strip()
+    if code:
+        tg_user = update.effective_user
+        user, refusal = accounts.link_telegram(
+            code, tg_user.id if tg_user else 0, tg_user.username if tg_user else None)
+        if user is None:
+            await update.message.reply_text(f"⚠️ {refusal}")
+            return
+        company = user.get("company_name")
+        await update.message.reply_text(
+            f"✅ Hola, {_display_name(user)}. Tu Telegram ya está conectado a tu cuenta"
+            + (f" de {company}" if company else "") + ".\n\n"
+            "Mándame un audio o escríbeme para hacer una factura, o una foto de un "
+            "ticket para anotar un gasto. /ayuda para ver todo lo que sé hacer."
+        )
+        return
+
+    if await _gate(update) is None:
+        return
     await update.message.reply_text(_WELCOME, parse_mode="Markdown")
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _gate(update) is None:
+        return
     await update.message.reply_text(_HELP, parse_mode="Markdown")
 
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Report this chat's id — used to configure TELEGRAM_CHAT_ID."""
+    """Report this chat's id — used to configure TELEGRAM_CHAT_ID.
+
+    Open to everyone on purpose: it is how the owner's chat is set up in the first
+    place, and it tells a stranger nothing but their own id.
+    """
     await update.message.reply_text(
         f"El ID de este chat es: `{update.effective_chat.id}`\n"
-        "Ponlo en el archivo `.env` como `TELEGRAM_CHAT_ID` para recibir aquí los "
-        "avisos. Va en `.env` y no en `company.yaml` porque ese se sube a GitHub.",
+        "Ponlo en el panel de administración (Configurar empresa → Chat de avisos) o en "
+        "el archivo `.env` como `TELEGRAM_CHAT_ID` para recibir aquí los avisos.",
         parse_mode="Markdown",
     )
 
@@ -115,6 +223,8 @@ async def cmd_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     spaces without needing quotes -- dictating "Ferreteria Puig 242" on a phone is the
     whole point of having this as a command.
     """
+    if await _gate(update, "bills.manage") is None:
+        return
     args = list(context.args or [])
     amount = None
     for i in range(len(args) - 1, -1, -1):
@@ -138,7 +248,7 @@ async def cmd_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     bill = bills.get(bill_id)
     config = get_config()
     await update.message.reply_text(
-        f"✅ Anotado: *{bill['supplier_name']}* — {amount:.2f} {config.currency_symbol}\n"
+        f"✅ Anotado: *{_md(bill['supplier_name'])}* — {amount:.2f} {config.currency_symbol}\n"
         f"Vence el *{bill['due_date']}*.\n"
         f"Total pendiente de pagar: {format_money(bills.total_owed(), config)}",
         parse_mode="Markdown",
@@ -146,12 +256,24 @@ async def cmd_gasto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_pagos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show what is owed out and what is owed in, on demand."""
+    """Show what is owed out and what is owed in, on demand -- as far as the caller may see."""
     from src.notify import build_money_digest
+
+    user = await _gate(update)
+    if user is None:
+        return
+    see_bills = accounts.can(user, "bills.view")
+    see_receivables = accounts.can(user, "receivables.view")
+    if not (see_bills or see_receivables):
+        await update.message.reply_text(
+            "No tienes permiso para ver los cobros ni los pagos. "
+            "Si lo necesitas, pídeselo a tu responsable.")
+        return
 
     config = get_config()
     digest = build_money_digest(
-        bills.due_soon(within_days=config.bills_due_within_days), store.list_unpaid()
+        bills.due_soon(within_days=config.bills_due_within_days) if see_bills else [],
+        store.list_unpaid() if see_receivables else [],
     )
     await update.message.reply_text(
         digest or "No hay pagos ni cobros pendientes. 🎉"
@@ -180,7 +302,7 @@ def _trailing_numbers(args: list[str], how_many: int):
 def _stock_line(product: dict) -> str:
     mark = "⚠️" if (product["reorder_point"] > 0
                     and product["stock_qty"] <= product["reorder_point"]) else "•"
-    line = f"  {mark} {product['name']}: {product['stock_qty']:g} {product['unit']}"
+    line = f"  {mark} {_md(product['name'])}: {product['stock_qty']:g} {product['unit']}"
     if product["reorder_point"] > 0:
         line += f" (pedir a {product['reorder_point']:g})"
     return line
@@ -189,6 +311,9 @@ def _stock_line(product: dict) -> str:
 async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show what is in stock, with anything at its reorder point flagged first."""
     from src import catalog
+
+    if await _gate(update, "stock.view") is None:
+        return
 
     tracked = [p for p in catalog.list_all() if p["track_stock"]]
     if not tracked:
@@ -231,6 +356,8 @@ async def cmd_producto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     args = list(context.args or [])
     if not args:
+        if await _gate(update, "stock.view") is None:
+            return
         products = catalog.list_all()
         if not products:
             await update.message.reply_text(
@@ -245,8 +372,12 @@ async def cmd_producto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         for p in products[:40]:
             stock = (f" — {p['stock_qty']:g} {p['unit']}" if p["track_stock"]
                      else " — servicio")
-            lines.append(f"• {p['name']}: {format_money(p['unit_price'], config)}{stock}")
+            lines.append(f"• {_md(p['name'])}: "
+                         f"{format_money(p['unit_price'], config)}{stock}")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return
+
+    if await _gate(update, "stock.manage") is None:
         return
 
     name, numbers = _trailing_numbers(args, 2)
@@ -265,7 +396,7 @@ async def cmd_producto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if catalog.find_by_name(name):
         await update.message.reply_text(
-            f"Ya tienes un producto llamado *{name}*. "
+            f"Ya tienes un producto llamado *{_md(name)}*. "
             f"Para añadirle stock usa `/entrada {name} <cantidad>`.",
             parse_mode="Markdown",
         )
@@ -279,12 +410,12 @@ async def cmd_producto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     config = get_config()
 
     if product["track_stock"]:
-        body = (f"✅ Producto creado: *{product['name']}*\n"
+        body = (f"✅ Producto creado: *{_md(product['name'])}*\n"
                 f"Precio: {format_money(product['unit_price'], config)}\n"
                 f"Stock inicial: {product['stock_qty']:g} {product['unit']}\n\n"
                 f"Lo descontaré solo cuando lo factures.")
     else:
-        body = (f"✅ Servicio creado: *{product['name']}*\n"
+        body = (f"✅ Servicio creado: *{_md(product['name'])}*\n"
                 f"Precio: {format_money(product['unit_price'], config)}\n\n"
                 f"Sin control de stock. Si querías llevar stock, dime también "
                 f"cuántos tienes: `/producto {product['name']} "
@@ -295,6 +426,9 @@ async def cmd_producto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def _adjust_stock(update, context, sign: int, verb: str) -> None:
     """Shared body of /entrada and /salida: <producto> <cantidad>."""
     from src import catalog
+
+    if await _gate(update, "stock.manage") is None:
+        return
 
     name, numbers = _trailing_numbers(list(context.args or []), 1)
     if not name or not numbers:
@@ -308,7 +442,7 @@ async def _adjust_stock(update, context, sign: int, verb: str) -> None:
     product = catalog.find_in_text(name)
     if product is None:
         await update.message.reply_text(
-            f"No encuentro ningún producto que se llame «{name}». "
+            f"No encuentro ningún producto que se llame «{_md(name)}». "
             "Mira `/producto` para ver los que tienes, o créalo con "
             f"`/producto {name} <precio> <cantidad>`.",
             parse_mode="Markdown",
@@ -321,7 +455,7 @@ async def _adjust_stock(update, context, sign: int, verb: str) -> None:
         reason=catalog.PURCHASE if sign > 0 else catalog.ADJUSTMENT,
     )
     arrow = "➕" if sign > 0 else "➖"
-    text = (f"{arrow} *{product['name']}*: {'+' if sign > 0 else '−'}{quantity:g}\n"
+    text = (f"{arrow} *{_md(product['name'])}*: {'+' if sign > 0 else '−'}{quantity:g}\n"
             f"Quedan *{balance:g} {product['unit']}*.")
     if product["reorder_point"] > 0 and balance <= product["reorder_point"]:
         text += f"\n⚠️ Estás en el punto de pedido ({product['reorder_point']:g})."
@@ -342,6 +476,9 @@ async def cmd_inventario(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Set a counted level: /inventario <producto> <cantidad contada>"""
     from src import catalog
 
+    if await _gate(update, "stock.manage") is None:
+        return
+
     name, numbers = _trailing_numbers(list(context.args or []), 1)
     if not name or not numbers:
         await update.message.reply_text(
@@ -360,12 +497,14 @@ async def cmd_inventario(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     before = product["stock_qty"]
     balance = catalog.set_level(product["id"], numbers[0])
     difference = round(balance - before, 4)
-    text = (f"📋 *{product['name']}*: {before:g} → *{balance:g} {product['unit']}*\n"
+    text = (f"📋 *{_md(product['name'])}*: {before:g} → *{balance:g} {product['unit']}*\n"
             f"Diferencia: {difference:+g}")
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _gate(update, "invoices.rectify") is None:
+        return
     if not context.args:
         await update.message.reply_text(
             "Uso: `/anular <número de factura>`\nEjemplo: `/anular 2026-0007`",
@@ -375,10 +514,11 @@ async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     number = context.args[0].strip()
     status = await update.message.reply_text(
-        f"Emitiendo factura rectificativa que anula *{number}*...", parse_mode="Markdown"
+        f"Emitiendo factura rectificativa que anula *{_md(number)}*...",
+        parse_mode="Markdown",
     )
     try:
-        rectifying, pdf_path = create_rectifying_invoice(number)
+        rectifying, pdf_path = await asyncio.to_thread(create_rectifying_invoice, number)
         config = get_config()
         _, _, total = compute_totals(rectifying, config)
         with open(pdf_path, "rb") as pdf_file:
@@ -387,7 +527,7 @@ async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 filename=f"Factura_{rectifying.invoice_number}.pdf",
                 caption=(
                     f"✅ Factura rectificativa *{rectifying.invoice_number}*\n"
-                    f"Anula la factura {number}\n"
+                    f"Anula la factura {_md(number)}\n"
                     f"Importe: {format_money(total, config)}"
                 ),
                 parse_mode="Markdown",
@@ -401,11 +541,18 @@ async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 def _keyboard(buttons):
+    """[(label, data), ...] one per row, or a list of pairs for a row of several."""
     if not buttons:
         return None
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton(label, callback_data=data)] for label, data in buttons]
-    )
+    rows = []
+    for entry in buttons:
+        if isinstance(entry, list):
+            rows.append([InlineKeyboardButton(label, callback_data=data)
+                         for label, data in entry])
+        else:
+            label, data = entry
+            rows.append([InlineKeyboardButton(label, callback_data=data)])
+    return InlineKeyboardMarkup(rows)
 
 
 async def _send(target, replies) -> None:
@@ -418,7 +565,13 @@ async def _send(target, replies) -> None:
         )
 
 
+# ── Dictating an invoice ─────────────────────────────────────────────────────
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = await _gate(update, "invoices.create")
+    if user is None:
+        return
+
     status_msg = await update.message.reply_text("Recibido. Descargando audio...")
     tmp_path: str | None = None
     try:
@@ -429,14 +582,15 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await tg_file.download_to_drive(tmp_path)
 
         await status_msg.edit_text("Transcribiendo audio...")
-        transcript = transcribe_audio(tmp_path)
+        # A slow network call: on the event loop it would freeze every other chat.
+        transcript = await asyncio.to_thread(transcribe_audio, tmp_path)
         logger.info("Transcript: %s", transcript)
 
         await status_msg.edit_text(
-            f"Transcripción:\n_{transcript}_\n\nExtrayendo datos...",
+            f"Transcripción:\n_{_md(transcript)}_\n\nExtrayendo datos...",
             parse_mode="Markdown",
         )
-        await _begin_invoice(update, status_msg, transcript)
+        await _begin_invoice(update, status_msg, transcript, user)
 
     except Exception as exc:
         logger.error("Error processing the audio", exc_info=True)
@@ -455,6 +609,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     every pixel they can get to stay legible. An image sent as a file (Document) arrives
     uncompressed, which is better still.
     """
+    if await _gate(update, "bills.manage") is None:
+        return
+
     message = update.message
     status_msg = await message.reply_text("Recibido. Leyendo el documento...")
     tmp_path: str | None = None
@@ -515,27 +672,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # next message; only then does a typed sentence mean "start an invoice".
     expense = receipts.session_for(update.effective_chat.id)
     if expense.active:
+        if await _gate(update, "bills.manage") is None:
+            return
         await _send(update.message, expense.handle_text(text))
+        return
+
+    user = await _gate(update, "invoices.create")
+    if user is None:
         return
 
     session = conversation.session_for(update.effective_chat.id)
 
     if session.active:
         if session.awaiting == conversation.AWAIT_CONFIRM and conversation.says_yes(text):
-            await _approve(update, session)
+            await _approve(update, session, user)
             return
         await _send(update.message, session.handle_text(text))
         return
 
     status_msg = await update.message.reply_text("Leyendo los datos de la factura...")
-    await _begin_invoice(update, status_msg, text)
+    await _begin_invoice(update, status_msg, text, user)
 
 
-async def _begin_invoice(update, status_msg, text: str) -> None:
+async def _begin_invoice(update, status_msg, text: str, user: dict) -> None:
     """Parse a dictation or a typed request and start the review dialogue."""
     session = conversation.session_for(update.effective_chat.id)
     try:
-        invoice = parse_invoice_from_transcript(text)
+        invoice = await asyncio.to_thread(parse_invoice_from_transcript, text)
     except Exception as exc:
         logger.error("Could not parse the invoice", exc_info=True)
         await status_msg.edit_text(
@@ -543,29 +706,34 @@ async def _begin_invoice(update, status_msg, text: str) -> None:
         )
         return
 
-    replies = session.start(invoice)
+    replies = session.start(invoice, can_send=accounts.can(user, "invoices.approve"))
     await status_msg.delete()
     await _send(update.message, replies)
 
 
-async def _approve(update, session) -> None:
-    """Issue the invoice the user has just confirmed."""
-    message = update.message or update.callback_query.message
+async def _approve(update, session, user: dict) -> None:
+    """The user confirmed the invoice: issue it, or queue it if it is not theirs to send."""
+    if not accounts.can(user, "invoices.approve"):
+        await _queue(update, session, user, ask_for_approval=True)
+        return
+
+    message = _target(update)
     invoice = session.invoice
     config = get_config()
 
     status = await message.reply_text("Generando y enviando la factura...")
     try:
         new_contact = session.contact_is_new()
-        pdf_path = finalize_invoice(invoice)
+        # Numbering, PDF, Sheets and Gmail: slow and blocking, so off the event loop.
+        pdf_path = await asyncio.to_thread(finalize_invoice, invoice)
         _, _, total = compute_totals(invoice, config)
 
         saved_note = ""
         if new_contact and session.save_contact():
-            saved_note = f"\n\n💾 He guardado a *{invoice.client_name}* en tus clientes."
+            saved_note = f"\n\n💾 He guardado a *{_md(invoice.client_name)}* en tus clientes."
 
         if invoice.client_email:
-            sent = f"📧 Enviada a {invoice.client_email}"
+            sent = f"📧 Enviada a {_md(invoice.client_email)}"
         else:
             sent = "⚠️ No enviada: falta el email del cliente"
 
@@ -574,7 +742,7 @@ async def _approve(update, session) -> None:
         stock_note = ""
         for movement in getattr(invoice, "stock_movements", []):
             stock_note += (
-                f"\n📦 {movement['name']}: −{movement['quantity']:g} → "
+                f"\n📦 {_md(movement['name'])}: −{movement['quantity']:g} → "
                 f"quedan {movement['balance']:g} {movement['unit']}"
             )
             if movement["low"]:
@@ -586,7 +754,7 @@ async def _approve(update, session) -> None:
                 filename=f"Factura_{invoice.invoice_number}.pdf",
                 caption=(
                     f"✅ Factura *{invoice.invoice_number}*\n"
-                    f"Cliente: {invoice.client_name}\n"
+                    f"Cliente: {_md(invoice.client_name)}\n"
                     f"Total: {format_money(total, config)}\n"
                     f"{sent}{stock_note}{saved_note}"
                 ),
@@ -602,12 +770,176 @@ async def _approve(update, session) -> None:
         conversation.clear(update.effective_chat.id)
 
 
+async def _queue(update, session, user: dict, ask_for_approval: bool) -> None:
+    """Put the confirmed draft in the pending queue instead of sending it.
+
+    Two ways here: someone without the approval permission ("Mandar a revisión" -- the
+    approvers are sent the draft with an approve button), and an approver who wants
+    to look again later ("Guardar sin enviar" -- nobody else is bothered).
+
+    No invoice number is consumed until approval, so a draft that is thrown away
+    leaves no gap in the series.
+    """
+    message = _target(update)
+    chat_id = update.effective_chat.id
+    invoice = session.invoice
+    config = get_config()
+    try:
+        # Remember a new client now: whoever approves it later should not lose them.
+        if session.contact_is_new():
+            session.save_contact()
+
+        token = store.new_token()
+        draft_path = finalize.draft_path(token)
+        await asyncio.to_thread(generate_invoice_pdf, invoice, draft_path)
+        store.add_pending(
+            invoice, draft_path, token=token,
+            created_by=user.get("id"), created_by_name=_display_name(user),
+            created_chat_id=chat_id,
+        )
+        _, _, total = compute_totals(invoice, config)
+        summary = f"{invoice.client_name} — {format_money(total, config)}"
+
+        if ask_for_approval:
+            told = await asyncio.to_thread(notify.request_approval, token, chat_id)
+            if told:
+                text = (f"📤 Mandada a revisión: {summary}.\n"
+                        "Te aviso aquí en cuanto la aprueben o la descarten.")
+            else:
+                text = (f"📤 Guardada para revisión: {summary}.\n"
+                        "Ahora mismo nadie que pueda aprobarla tiene Telegram conectado, "
+                        "así que la verán en el panel web (Pendientes).")
+        else:
+            text = (f"💾 Guardada sin enviar: {summary}.\n"
+                    "La tienes en /pendientes y en el panel para enviarla cuando quieras.")
+        await message.reply_text(text)
+    except Exception as exc:
+        logger.error("Could not queue the invoice", exc_info=True)
+        await message.reply_text(f"No he podido guardarla: {exc}")
+    finally:
+        conversation.clear(chat_id)
+
+
+# ── The pending queue from Telegram ──────────────────────────────────────────
+
+def _pending_buttons(token: str, can_approve: bool):
+    if can_approve:
+        return [[("✅ Aprobar y enviar", f"pend:ok:{token}"),
+                 ("❌ Descartar", f"pend:no:{token}")],
+                [("📄 Ver PDF", f"pend:pdf:{token}")]]
+    return [[("📄 Ver PDF", f"pend:pdf:{token}")]]
+
+
+async def cmd_pendientes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Invoices waiting for approval, each with its buttons."""
+    user = await _gate(update, "invoices.view")
+    if user is None:
+        return
+    pending = store.list_pending()
+    if not pending:
+        await update.message.reply_text("No hay ninguna factura pendiente de aprobar. 👌")
+        return
+
+    config = get_config()
+    can_approve = accounts.can(user, "invoices.approve")
+    await update.message.reply_text(
+        f"Hay {len(pending)} factura(s) esperando aprobación:")
+    for p in pending[:10]:
+        inv = p["invoice"]
+        _, _, total = compute_totals(inv, config)
+        who = p.get("created_by_name")
+        text = (f"🧾 {inv.client_name} — {format_money(total, config)}\n"
+                f"Para: {inv.client_email or '(sin email)'}\n"
+                f"Preparada el {(p.get('created') or '')[:10]}"
+                + (f" por {who}" if who else ""))
+        await update.message.reply_text(
+            text, reply_markup=_keyboard(_pending_buttons(p["token"], can_approve)))
+    if len(pending) > 10:
+        await update.message.reply_text(
+            f"… y {len(pending) - 10} más en el panel web (Pendientes).")
+
+
+async def _on_pending_button(update: Update, action: str, token: str) -> None:
+    query = update.callback_query
+    user = await _gate(update, "invoices.view" if action == "pdf" else "invoices.approve")
+    if user is None:
+        return
+
+    pending = store.get_pending(token)
+    if pending is None:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            "Esa factura ya no está pendiente: la ha revisado otra persona.")
+        return
+
+    invoice = pending["invoice"]
+    config = get_config()
+
+    if action == "pdf":
+        draft = pending.get("draft_path") or finalize.draft_path(token)
+        if not os.path.exists(draft):
+            await asyncio.to_thread(generate_invoice_pdf, invoice, draft)
+        with open(draft, "rb") as pdf_file:
+            await query.message.reply_document(document=pdf_file,
+                                               filename="Borrador_factura.pdf")
+        return
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    approver = _display_name(user)
+
+    if action == "no":
+        store.remove_pending(token)
+        await query.message.reply_text(f"❌ Descartada: {invoice.client_name}.")
+        await asyncio.to_thread(
+            notify.tell_creator, pending,
+            f"❌ {approver} ha descartado tu factura para {invoice.client_name}. "
+            "No se ha enviado nada.")
+        return
+
+    # action == "ok": approve and send.
+    status = await query.message.reply_text("Aprobando y enviando...")
+    invoice.invoice_number = None  # a fresh gap-free number, assigned now
+    try:
+        pdf_path = await asyncio.to_thread(finalize_invoice, invoice, token)
+    except KeyError:
+        await status.edit_text("Esa factura ya no está pendiente: la ha aprobado otra persona.")
+        return
+    except Exception as exc:
+        logger.error("Could not approve %s", token, exc_info=True)
+        await status.edit_text(f"Error al emitir la factura:\n{exc}")
+        return
+
+    _, _, total = compute_totals(invoice, config)
+    sent = (f"📧 Enviada a {invoice.client_email}" if invoice.client_email
+            else "⚠️ No enviada: falta el email del cliente")
+    with open(pdf_path, "rb") as pdf_file:
+        await query.message.reply_document(
+            document=pdf_file,
+            filename=f"Factura_{invoice.invoice_number}.pdf",
+            caption=(f"✅ Factura {invoice.invoice_number} aprobada\n"
+                     f"Cliente: {invoice.client_name}\n"
+                     f"Total: {format_money(total, config)}\n{sent}"),
+        )
+    await status.delete()
+    await asyncio.to_thread(
+        notify.tell_creator, pending,
+        f"✅ {approver} ha aprobado tu factura para {invoice.client_name}: "
+        f"{invoice.invoice_number}, {format_money(total, config)}. {sent}.")
+
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     data = query.data or ""
 
+    if data.startswith("pend:"):
+        _, action, token = (data.split(":", 2) + ["", ""])[:3]
+        await _on_pending_button(update, action, token)
+        return
+
     if data.startswith("exp:"):
+        if await _gate(update, "bills.manage") is None:
+            return
         expense = receipts.session_for(update.effective_chat.id)
         await query.edit_message_reply_markup(reply_markup=None)
         if not expense.active:
@@ -622,6 +954,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await _send(query.message, expense.cancel())
         return
 
+    user = await _gate(update, "invoices.create")
+    if user is None:
+        return
+
     session = conversation.session_for(update.effective_chat.id)
 
     if not session.active:
@@ -631,7 +967,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if data == "approve":
         await query.edit_message_reply_markup(reply_markup=None)
-        await _approve(update, session)
+        await _approve(update, session, user)
+        return
+
+    if data == "hold":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await _queue(update, session, user, ask_for_approval=False)
         return
 
     if data == "cancel":
@@ -651,6 +992,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _gate(update) is None:
+        return
     expense = receipts.session_for(update.effective_chat.id)
     if expense.active:
         await _send(update.message, expense.cancel())
@@ -667,6 +1010,8 @@ async def cmd_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """List the stored clients, so it is obvious what the bot already knows."""
     from src import contacts
 
+    if await _gate(update, "contacts.view") is None:
+        return
     clients = contacts.list_all(contacts.CLIENT)
     if not clients:
         await update.message.reply_text(
@@ -676,7 +1021,7 @@ async def cmd_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     lines = [f"*Clientes guardados ({len(clients)})*", ""]
     for c in clients:
-        lines.append(f"• {contacts.describe(c)}")
+        lines.append(f"• {_md(contacts.describe(c))}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -710,33 +1055,36 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def _bot_token() -> str | None:
-    """Which Telegram bot to run as.
-
-    Each client company has its own bot, with its own name and its own token, entered
-    in the admin panel -- that is what makes "connect this client's bot" a form rather
-    than an edit to a file on their machine. TELEGRAM_BOT_TOKEN in .env still wins when
-    it is set, so an existing installation keeps working untouched.
+    """Which Telegram bot to run as -- see telegram_api.bot_token().
 
     Only the active company's bot runs here: one process serves one company, which is
-    how the software is installed. Running every client's bot from a single process
-    needs the records separated by company first.
+    how the software is installed.
     """
-    from_env = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    if from_env:
-        return from_env
+    from src import telegram_api
 
+    return telegram_api.bot_token()
+
+
+# The menu Telegram shows when "/" is typed, so nobody has to remember a command.
+_MENU = [
+    ("ayuda", "Cómo hablarme y ejemplos"),
+    ("pendientes", "Facturas esperando aprobación"),
+    ("pagos", "Qué debes y qué te deben"),
+    ("clientes", "Clientes guardados"),
+    ("stock", "Qué tienes en stock"),
+    ("producto", "Dar de alta un producto o ver el catálogo"),
+    ("entrada", "Te ha llegado material"),
+    ("gasto", "Anotar una factura de proveedor"),
+    ("anular", "Emitir una rectificativa"),
+    ("cancelar", "Descartar lo que está en marcha"),
+]
+
+
+async def _post_init(app: Application) -> None:
     try:
-        from src import accounts
-
-        company = accounts.active_company()
-        if company:
-            token = (company.get("telegram_bot_token") or "").strip()
-            if token:
-                logger.info("Using the Telegram bot configured for %s", company["name"])
-                return token
+        await app.bot.set_my_commands([BotCommand(c, d) for c, d in _MENU])
     except Exception:
-        logger.debug("Could not read the company's bot token", exc_info=True)
-    return None
+        logger.warning("Could not publish the command menu", exc_info=True)
 
 
 def run_bot() -> None:
@@ -747,11 +1095,12 @@ def run_bot() -> None:
             "(Empresas → Configurar empresa y su bot) o en TELEGRAM_BOT_TOKEN en .env."
         )
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("ayuda", cmd_help))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("chatid", cmd_chatid))
+    app.add_handler(CommandHandler("pendientes", cmd_pendientes))
     app.add_handler(CommandHandler("anular", cmd_anular))
     app.add_handler(CommandHandler("gasto", cmd_gasto))
     app.add_handler(CommandHandler("pagos", cmd_pagos))
@@ -776,6 +1125,13 @@ def run_bot() -> None:
             "config/company.yaml still has the example company details, so every "
             "invoice will be stamped DOCUMENTO DE PRUEBA. Fill in the client's name, "
             "CIF, address and IBAN before going live."
+        )
+    if not telegram_access.owner_chat_ids() and not accounts.telegram_recipients(
+            "invoices.create"):
+        logger.warning(
+            "Nobody can use the bot yet: set the owner's chat (TELEGRAM_CHAT_ID, or "
+            "'Chat de avisos' in the admin panel) or link an account from the panel "
+            "(Mi cuenta -> Conectar Telegram). Strangers are refused."
         )
 
     logger.info("Bot started, waiting for messages...")

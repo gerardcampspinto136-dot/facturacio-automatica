@@ -12,6 +12,7 @@ The account panels themselves live in src/web/admin.py.
 Set WEB_DEV_NO_AUTH=1 to bypass Google login for local testing.
 """
 
+import asyncio
 import html
 import logging
 import os
@@ -521,6 +522,7 @@ def _sidebar(user: dict, current: str) -> str:
         "<div class='whoami-text'>"
         f"<div class='whoami-name'>{html.escape(user.get('name') or user.get('email',''))}</div>"
         f"<div class='whoami-sub'>{html.escape(_role_name(user))} · "
+        "<a href='/me'>mi cuenta</a> · "
         "<a href='/logout'>salir</a></div></div></div>"
         "</aside>"
     )
@@ -845,9 +847,13 @@ async def serve_pdf(request: Request, token: str):
                         filename="Borrador_factura.pdf")
 
 
+def _person(user) -> str:
+    return (user or {}).get("name") or (user or {}).get("email") or "Un responsable"
+
+
 @app.post("/invoice/{token}/approve")
 async def approve(request: Request, token: str):
-    _user_, refusal = _guard(request, "invoices.approve")
+    user, refusal = _guard(request, "invoices.approve")
     if refusal:
         return refusal
     p = store.get_pending(token)
@@ -855,16 +861,35 @@ async def approve(request: Request, token: str):
         return RedirectResponse("/", status_code=303)
     inv: InvoiceData = p["invoice"]
     inv.invoice_number = None  # force a fresh gap-free number on finalize
-    finalize_invoice(inv, token=token)
+    try:
+        await asyncio.to_thread(finalize_invoice, inv, token)
+    except KeyError:
+        # Approved from Telegram, or by a colleague, a moment earlier.
+        return RedirectResponse("/", status_code=303)
+
+    from src import notify
+
+    await asyncio.to_thread(
+        notify.tell_creator, p,
+        f"✅ {_person(user)} ha aprobado tu factura para {inv.client_name}: "
+        f"{inv.invoice_number}.")
     return RedirectResponse("/", status_code=303)
 
 
 @app.post("/invoice/{token}/reject")
 async def reject(request: Request, token: str):
-    _user_, refusal = _guard(request, "invoices.approve")
+    user, refusal = _guard(request, "invoices.approve")
     if refusal:
         return refusal
+    p = store.get_pending(token)
     store.remove_pending(token)
+    if p:
+        from src import notify
+
+        await asyncio.to_thread(
+            notify.tell_creator, p,
+            f"❌ {_person(user)} ha descartado tu factura para "
+            f"{p['invoice'].client_name}. No se ha enviado nada.")
     return RedirectResponse("/", status_code=303)
 
 

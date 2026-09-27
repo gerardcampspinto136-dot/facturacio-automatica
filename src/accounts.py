@@ -445,3 +445,114 @@ def load_context(user_id: int) -> Optional[dict]:
             user["company_name"] = company["name"]
             user["company_status"] = company["status"]
     return user
+
+
+# ── Telegram ─────────────────────────────────────────────────────────────────
+#
+# The bot used to answer anybody who found it: a stranger could send invoices in the
+# client's name from their Gmail, read who owes them money and list their clients'
+# tax ids. Now a Telegram account only gets in once it is linked to a panel account,
+# and from then on it has exactly that account's permissions.
+#
+# Linking is a one-time code the person obtains while signed in to the panel with
+# Google. Opening t.me/<bot>?start=<code> on the phone sends it to the bot, which ties
+# that Telegram account to the panel account. Nobody types an id anywhere.
+
+# No 0/O or 1/I/L: the code may be read off a screen and typed.
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+TELEGRAM_CODE_HOURS = 24
+
+
+def create_telegram_code(user_id: int) -> str:
+    """Issue a fresh pairing code for this account, replacing any earlier one."""
+    import secrets
+    from datetime import datetime, timedelta
+
+    code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(10))
+    expires = (datetime.now() + timedelta(hours=TELEGRAM_CODE_HOURS)).isoformat(
+        timespec="seconds")
+    with db.transaction() as conn:
+        cur = conn.execute(
+            "UPDATE users SET telegram_code = ?, telegram_code_expires = ? WHERE id = ?",
+            (code, expires, user_id),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(f"User {user_id} not found")
+    return code
+
+
+def link_telegram(code: str, telegram_id: int,
+                  username: Optional[str] = None) -> tuple[Optional[dict], Optional[str]]:
+    """Redeem a pairing code. Returns (user, refusal), the refusal phrased for the chat."""
+    from datetime import datetime
+
+    code = (code or "").strip().upper()
+    if not code:
+        return None, "Falta el código."
+    row = db.connect().execute(
+        "SELECT * FROM users WHERE telegram_code = ?", (code,)
+    ).fetchone()
+    if row is None:
+        return None, ("Ese código no es válido o ya se ha usado. Genera uno nuevo en el "
+                      "panel: Mi cuenta → Conectar Telegram.")
+    user = _row(row)
+    if (user.get("telegram_code_expires") or "") < datetime.now().isoformat(
+            timespec="seconds"):
+        return None, "Ese código ha caducado. Genera uno nuevo en el panel."
+    if not user["active"]:
+        return None, "Esa cuenta está desactivada."
+
+    with db.transaction() as conn:
+        # One Telegram account belongs to one panel account: moving it frees the old one.
+        conn.execute(
+            "UPDATE users SET telegram_id = NULL, telegram_username = NULL "
+            "WHERE telegram_id = ? AND id <> ?", (telegram_id, user["id"]))
+        conn.execute(
+            "UPDATE users SET telegram_id = ?, telegram_username = ?, "
+            "telegram_code = NULL, telegram_code_expires = NULL WHERE id = ?",
+            (telegram_id, (username or "").strip() or None, user["id"]),
+        )
+    return load_context(user["id"]), None
+
+
+def unlink_telegram(user_id: int) -> None:
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE users SET telegram_id = NULL, telegram_username = NULL, "
+            "telegram_code = NULL, telegram_code_expires = NULL WHERE id = ?",
+            (user_id,),
+        )
+
+
+def find_by_telegram(telegram_id: Optional[int]) -> Optional[dict]:
+    """The usable account behind a Telegram user, or None.
+
+    Checked on every message, like the web does on every request: deactivating
+    someone or suspending the company takes effect on their very next message.
+    """
+    if not telegram_id:
+        return None
+    row = db.connect().execute(
+        "SELECT id FROM users WHERE telegram_id = ?", (telegram_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    user = load_context(row["id"])
+    if user is None or not user["active"]:
+        return None
+    if user.get("company_status") == SUSPENDED:
+        return None
+    return user
+
+
+def telegram_recipients(permission: str) -> list[dict]:
+    """Linked, active accounts that hold `permission` -- who to tell about something."""
+    rows = db.connect().execute(
+        "SELECT id FROM users WHERE telegram_id IS NOT NULL AND active = 1"
+    ).fetchall()
+    out = []
+    for row in rows:
+        user = load_context(row["id"])
+        if user and can(user, permission):
+            out.append(user)
+    return out

@@ -6,10 +6,19 @@ the end of a product name that itself contains spaces and digits.
 """
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
 from src import bot, catalog
+
+# The owner's chat: the bot is private, so the commands are driven as its owner.
+OWNER_CHAT = 4242
+
+
+@pytest.fixture(autouse=True)
+def as_the_owner(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", str(OWNER_CHAT))
 
 
 class FakeMessage:
@@ -26,8 +35,12 @@ class FakeMessage:
 
 
 class FakeUpdate:
-    def __init__(self):
+    def __init__(self, user_id: int = OWNER_CHAT):
         self.message = FakeMessage()
+        self.callback_query = None
+        self.effective_user = SimpleNamespace(id=user_id, username="owner",
+                                              full_name="Owner")
+        self.effective_chat = SimpleNamespace(id=user_id)
 
 
 class FakeContext:

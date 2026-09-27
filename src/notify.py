@@ -16,31 +16,23 @@ from src.config_loader import get_config
 logger = logging.getLogger(__name__)
 
 
-def _telegram(chat_id, text: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token or not chat_id:
-        logger.warning("Telegram notification skipped (missing token or chat_id)")
-        return
-    import requests
+def _dispatch(subject: str, text: str, permission: str) -> None:
+    """Send one message on every channel the config asks for, surviving a failure on either.
 
-    resp = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text},
-        timeout=15,
-    )
-    resp.raise_for_status()
+    On Telegram it goes to the owner's chat and to every linked account that holds
+    `permission` -- the people who can actually act on it.
+    """
+    from src import telegram_access, telegram_api
 
-
-def _dispatch(subject: str, text: str) -> None:
-    """Send one message on every channel the config asks for, surviving a failure on either."""
     config = get_config()
     channels = config.notify_channels or []
 
     if "telegram" in channels:
-        try:
-            _telegram(config.notify_telegram_chat_id, text)
-        except Exception:
-            logger.error("Failed to send Telegram notification", exc_info=True)
+        chats = telegram_access.notify_chats(permission)
+        if not chats:
+            logger.warning("Telegram notification skipped: nobody to send it to")
+        for chat in chats:
+            telegram_api.send_message(chat, text)
 
     if "email" in channels and config.notify_email:
         try:
@@ -56,8 +48,61 @@ def send_pending_reminder(count: int, url: str) -> None:
     _dispatch(
         f"{count} factura(s) pendiente(s) de revisión",
         f"Tienes {count} factura(s) pendiente(s) de revisión.\n"
-        f"Revísalas y envíalas aquí:\n{url}",
+        f"Revísalas y envíalas aquí:\n{url}\n\n"
+        "O desde aquí mismo con /pendientes.",
+        "invoices.approve",
     )
+
+
+# ── Approval requests ────────────────────────────────────────────────────────
+
+def request_approval(token: str, exclude_chat: Optional[int] = None) -> int:
+    """Put a waiting draft in front of everyone who may approve it, with the buttons.
+
+    The approver gets the draft PDF itself, so approving is a look and a tap from the
+    phone rather than a trip to the office computer. Returns how many chats were told.
+    """
+    from src import store, telegram_access, telegram_api
+    from src.totals import compute_totals, format_money
+
+    pending = store.get_pending(token)
+    if pending is None:
+        return 0
+    invoice = pending["invoice"]
+    config = get_config()
+    _, _, total = compute_totals(invoice, config)
+
+    who = pending.get("created_by_name") or "Alguien del equipo"
+    caption = (
+        f"🧾 {who} ha preparado una factura y espera tu aprobación.\n\n"
+        f"Cliente: {invoice.client_name}\n"
+        f"Total: {format_money(total, config)}\n"
+        f"Se enviará a: {invoice.client_email or '(sin email: no se enviará)'}"
+    )
+    buttons = [[("✅ Aprobar y enviar", f"pend:ok:{token}"),
+                ("❌ Descartar", f"pend:no:{token}")]]
+
+    told = 0
+    for chat in telegram_access.notify_chats("invoices.approve"):
+        if exclude_chat is not None and chat == exclude_chat:
+            continue
+        draft = pending.get("draft_path")
+        if draft and os.path.exists(draft):
+            ok = telegram_api.send_document(chat, draft, caption, buttons,
+                                            filename="Borrador_factura.pdf")
+        else:
+            ok = telegram_api.send_message(chat, caption, buttons)
+        told += int(ok)
+    return told
+
+
+def tell_creator(pending: dict, text: str) -> None:
+    """Let whoever prepared a draft know what happened to it."""
+    from src import telegram_api
+
+    chat = (pending or {}).get("created_chat_id")
+    if chat:
+        telegram_api.send_message(chat, text)
 
 
 def _money(amount: float) -> str:
@@ -118,7 +163,7 @@ def send_money_digest(bills_due: list, unpaid_invoices: list,
     body = build_money_digest(bills_due, unpaid_invoices, as_of)
     if body is None:
         return False
-    _dispatch("Resumen de cobros y pagos", body)
+    _dispatch("Resumen de cobros y pagos", body, "receivables.manage")
     return True
 
 
@@ -134,5 +179,5 @@ def send_low_stock_alert(products: list) -> bool:
         )
     if len(products) > 15:
         lines.append(f"  … y {len(products) - 15} más")
-    _dispatch("Stock bajo", "\n".join(lines))
+    _dispatch("Stock bajo", "\n".join(lines), "stock.manage")
     return True
