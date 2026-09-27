@@ -686,6 +686,9 @@ async def company_settings(request: Request, company_id: int):
                  company.get("logo_path") or "config/logo.png")
         + _field("Email de contacto (para ti)", "contact_email",
                  company.get("contact_email"), "no sale en la factura", "email")
+        + _field("Email del gestor", "gestor_email", company.get("gestor_email"),
+                 "recibe cada trimestre los libros, las facturas y los tickets",
+                 "email")
         + "<label>Notas internas</label>"
         + f"<textarea name='notes' rows='2'>{html.escape(company.get('notes') or '')}</textarea>"
         + "</div>"

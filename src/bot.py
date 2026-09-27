@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import tempfile
 
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -45,6 +46,7 @@ _WELCOME = (
     "• /anular <número> — emitir una rectificativa\n"
     "• /gasto <proveedor> <importe> — anotar una factura de proveedor\n"
     "• /pagos — qué debes y qué te deben\n"
+    "• /trimestre — el IVA y el IRPF del trimestre, y el paquete para el gestor\n"
     "• /stock — qué tienes en stock (se descuenta solo al facturar)\n"
     "• /producto — dar de alta un producto · /entrada — te ha llegado material"
 )
@@ -581,6 +583,72 @@ async def _resend(target, number: str) -> None:
         await status.edit_text(f"⚠️ No se ha podido enviar la factura {number}: {error}")
 
 
+def _which_quarter(args: list[str]) -> tuple[int, int] | None:
+    """/trimestre, /trimestre 3, /trimestre 3T, /trimestre 2026 3 -> (year, quarter).
+
+    With nothing said: the quarter being filed right now if it is filing time, else
+    the one in progress -- "how much VAT am I carrying this quarter?".
+    """
+    from datetime import date
+
+    from src import taxes
+
+    today = date.today()
+    if not args:
+        return taxes.quarter_to_file(today) or taxes.quarter_of(today)
+    numbers = [int(n) for n in re.findall(r"\d+", " ".join(args))]
+    year = next((n for n in numbers if n > 2000), today.year)
+    quarter = next((n for n in numbers if 1 <= n <= 4), None)
+    return (year, quarter) if quarter else None
+
+
+async def cmd_trimestre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The quarter's VAT and IRPF, with the pack for the gestor a tap away."""
+    from src import gestor_pack, taxes
+
+    if await _gate(update, "taxes.view") is None:
+        return
+    which = _which_quarter(list(context.args or []))
+    if which is None:
+        await update.message.reply_text(
+            "Uso: `/trimestre` (el que toca), `/trimestre 3` o `/trimestre 2026 2`",
+            parse_mode="Markdown")
+        return
+    year, quarter = which
+    text = await asyncio.to_thread(taxes.summary_text, year, quarter)
+    sent = gestor_pack.sent_on(year, quarter)
+    if sent:
+        text += f"\n\n✅ Ya se le mandó al gestor ({sent[:10]})."
+    await update.message.reply_text(
+        text, reply_markup=_keyboard(gestor_pack.buttons(year, quarter)))
+
+
+async def _on_tax_button(update: Update, action: str, period: str) -> None:
+    from src import gestor_pack
+
+    query = update.callback_query
+    if await _gate(update, "taxes.view") is None:
+        return
+    try:
+        year, quarter = (int(p) for p in period.split("-"))
+    except ValueError:
+        return
+
+    if action == "pack":
+        status = await query.message.reply_text("Preparando el paquete...")
+        path = await asyncio.to_thread(gestor_pack.build_pack, year, quarter)
+        with open(path, "rb") as handle:
+            await query.message.reply_document(
+                document=handle, filename=path.name,
+                caption=("Libros de facturas en Excel, el PDF de cada factura y los "
+                         "tickets del trimestre. Reenvíaselo a tu gestor tal cual."))
+        await status.delete()
+    elif action == "mail":
+        status = await query.message.reply_text("Enviándoselo al gestor...")
+        sent, message = await asyncio.to_thread(gestor_pack.email_to_gestor, year, quarter)
+        await status.edit_text(("📧 " if sent else "⚠️ ") + message)
+
+
 async def cmd_factura(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/factura <número>: the PDF of an issued invoice. Without a number: the latest ones."""
     if await _gate(update, "invoices.view") is None:
@@ -1010,6 +1078,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _on_pending_button(update, action, token)
         return
 
+    if data.startswith("tax:"):
+        _, action, period = (data.split(":", 2) + ["", ""])[:3]
+        await _on_tax_button(update, action, period)
+        return
+
     if data.startswith("resend:"):
         if await _gate(update, "invoices.approve") is None:
             return
@@ -1155,6 +1228,7 @@ _MENU = [
     ("ayuda", "Cómo hablarme y ejemplos"),
     ("pendientes", "Facturas esperando aprobación"),
     ("factura", "El PDF de una factura emitida"),
+    ("trimestre", "IVA e IRPF del trimestre, y el paquete para el gestor"),
     ("pagos", "Qué debes y qué te deben"),
     ("clientes", "Clientes guardados"),
     ("stock", "Qué tienes en stock"),
@@ -1190,6 +1264,8 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("factura", cmd_factura))
     app.add_handler(CommandHandler("facturas", cmd_factura))
     app.add_handler(CommandHandler("reenviar", cmd_reenviar))
+    app.add_handler(CommandHandler("trimestre", cmd_trimestre))
+    app.add_handler(CommandHandler("impuestos", cmd_trimestre))
     app.add_handler(CommandHandler("anular", cmd_anular))
     app.add_handler(CommandHandler("gasto", cmd_gasto))
     app.add_handler(CommandHandler("pagos", cmd_pagos))

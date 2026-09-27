@@ -37,6 +37,27 @@ Decided **per person**, by the permission *Aprobar y enviar facturas* (Equipo):
 
 A draft consumes **no number** until it is approved, so discarded drafts never leave gaps.
 
+## Quarterly taxes and the gestor
+
+Everything needed for the quarter's returns is already recorded, so the software adds
+it up:
+
+- **Modelo 303 (IVA)** — VAT charged by rate, minus the deductible VAT on the expenses
+  recorded, and the result. Expenses entered without their VAT are pointed out: that is
+  deductible VAT being lost.
+- **Modelo 130 (IRPF)** — for a person (NIF, not CIF): the running totals from January,
+  20 %, minus earlier instalments and the IRPF clients withheld. A company is told it
+  files the 202 instead.
+- **The pack for the gestor** — one ZIP: the two VAT record books (issued and received
+  invoices) in Excel with totals as formulas, the PDF of every invoice, and the photo of
+  every receipt. Download it from *Impuestos* in the panel, get it in the chat with
+  `/trimestre`, or send it straight to the gestor's email (set in the company settings).
+- **The calendar** — when a filing window opens (1–20 April/July/October, 1–30
+  January) the owner gets the figures and the pack button; five days before the
+  deadline, if nothing has gone to the gestor yet, a last reminder.
+
+The figures are an estimate from what was recorded: the gestor reviews and files.
+
 ## Verifactu
 
 Mandatory for this software's clients from **1 January 2027** (companies) and **1 July

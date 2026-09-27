@@ -454,6 +454,7 @@ _NAV = (
         ("bills.view", "/bills", "↑", "Proveedores"),
     )),
     ("Hacienda", (
+        ("taxes.view", "/taxes", "§", "Impuestos"),
         ("invoices.view", "/verifactu", "▣", "Verifactu"),
     )),
     ("Administración", (
@@ -928,7 +929,12 @@ async def issued(request: Request):
 
     may_rectify = accounts.can(user, "invoices.rectify")
     may_send = accounts.can(user, "invoices.approve")
-    total_issued = sum(_totals(r["invoice"])[2] for r in records)
+    # Turnover is the taxable base: what the business earned, before the VAT it only
+    # collects for Hacienda and the IRPF its clients keep back. Rectifying invoices
+    # count negatively, so a cancelled sale is not counted as earned.
+    this_year = str(date.today().year)
+    turnover = sum(_totals(r["invoice"])[0] for r in records
+                   if r["invoice"].date.isoformat().startswith(this_year))
 
     rows = []
     for r in records:
@@ -981,7 +987,7 @@ async def issued(request: Request):
     body = (
         f"<div class='stats'>"
         f"{_stat('Facturas emitidas', str(len(records)))}"
-        f"{_stat('Facturado en total', _money(total_issued))}"
+        f"{_stat(f'Facturado en {this_year} (sin IVA)', _money(turnover))}"
         f"</div>"
         "<div class='card'><div class='table-wrap'><table><thead><tr>"
         "<th>Número</th><th>Cliente</th><th>Fecha</th><th>Estado</th>"
@@ -1031,6 +1037,151 @@ async def issued_resend(request: Request, number: str):
                      "<div class='actions'><a class='btn btn-neutral' href='/issued'>"
                      "Volver</a></div></div>", user)
     return RedirectResponse("/issued", status_code=303)
+
+
+# ── Taxes and the gestor ─────────────────────────────────────────────────────
+
+def _recent_quarters(count: int = 6) -> list[tuple[int, int]]:
+    from src import taxes
+
+    year, quarter = taxes.quarter_of(date.today())
+    out = []
+    for _ in range(count):
+        out.append((year, quarter))
+        year, quarter = (year - 1, 4) if quarter == 1 else (year, quarter - 1)
+    return out
+
+
+@app.get("/taxes", response_class=HTMLResponse)
+async def taxes_page(request: Request, y: int = 0, q: int = 0):
+    """The quarter's 303 and 130, and the pack for the gestor."""
+    from src import gestor_pack, taxes
+
+    user, refusal = _guard(request, "taxes.view")
+    if refusal:
+        return refusal
+    config = get_config()
+
+    if not (y and 1 <= q <= 4):
+        y, q = taxes.quarter_to_file() or taxes.quarter_of(date.today())
+
+    tabs = "".join(
+        f"<a class='btn btn-sm {'btn-primary' if (yy, qq) == (y, q) else 'btn-neutral'}' "
+        f"href='/taxes?y={yy}&q={qq}'>{taxes.label(yy, qq)}"
+        f"{' (en curso)' if (yy, qq) == taxes.quarter_of(date.today()) else ''}</a>"
+        for yy, qq in _recent_quarters()
+    )
+
+    vat = await asyncio.to_thread(taxes.vat_return, y, q)
+    company = taxes.is_company(config.cif)
+    irpf = None if company else await asyncio.to_thread(taxes.irpf_instalment, y, q)
+
+    tiles = [_stat("IVA a ingresar" if vat.result > 0 else "IVA a compensar",
+                   _money(abs(vat.result)),
+                   f"repercutido {_money(vat.output_tax)} · soportado {_money(vat.input_tax)}",
+                   "bad" if vat.result > 0 else "good")]
+    if irpf is not None:
+        tiles.append(_stat("IRPF a ingresar (130)", _money(irpf.to_pay),
+                           f"rendimiento {_money(irpf.net)} desde enero"))
+    window_start, window_end = taxes.filing_window(y, q)
+    tiles.append(_stat("Fecha límite", window_end.strftime("%d/%m/%Y"),
+                       f"se presenta desde el {window_start.strftime('%d/%m')}"))
+
+    rate_rows = "".join(
+        f"<tr><td>{taxes.rate_name(rate)}</td><td class='num'>{_money(base)}</td>"
+        f"<td class='num'>{_money(tax)}</td></tr>"
+        for rate, (base, tax) in sorted(vat.by_rate.items(), reverse=True)
+    ) or "<tr><td colspan='3' class='muted'>Sin facturas emitidas en el trimestre</td></tr>"
+    vat_card = (
+        "<div class='card'><div class='card-title'>Modelo 303 — IVA</div>"
+        "<div class='table-wrap'><table><thead><tr><th></th><th class='num'>Base</th>"
+        "<th class='num'>Cuota</th></tr></thead><tbody>" + rate_rows +
+        f"<tr><td class='strong'>IVA deducible ({vat.bills} gasto(s))</td>"
+        f"<td class='num'>{_money(vat.input_base)}</td>"
+        f"<td class='num'>−{_money(vat.input_tax)}</td></tr>"
+        f"<tr><td class='strong'>Resultado</td><td></td>"
+        f"<td class='num total'>{_money(vat.result)}</td></tr></tbody></table></div>"
+        + (f"<div class='notice notice-warn' style='margin-top:12px'>"
+           f"<b>{vat.bills_without_vat} gasto(s) sin el IVA desglosado</b>Si lo llevaban, "
+           "ese IVA no se está deduciendo. Mándale la foto del ticket al bot.</div>"
+           if vat.bills_without_vat else "")
+        + "</div>")
+
+    if irpf is None:
+        irpf_card = ("<div class='card'><div class='card-title'>Modelo 130</div>"
+                     "<p class='muted'>Como sociedad no presentas el 130: los pagos a "
+                     "cuenta son el modelo 202, sobre el beneficio.</p></div>")
+    else:
+        boxes = (("[01] Ingresos", irpf.income), ("[02] Gastos", irpf.expenses),
+                 ("[03] Rendimiento neto", irpf.net), ("[04] 20 %", irpf.twenty_percent),
+                 ("[05] Pagado en trimestres anteriores", irpf.previous_payments),
+                 ("[06] Retenciones que te han hecho", irpf.withheld),
+                 ("[07] Resultado", irpf.result))
+        irpf_card = (
+            "<div class='card'><div class='card-title'>Modelo 130 — IRPF "
+            "<span class='muted'>(acumulado desde enero)</span></div>"
+            "<div class='table-wrap'><table><tbody>"
+            + "".join(f"<tr><td>{html.escape(label)}</td>"
+                      f"<td class='num'>{_money(value)}</td></tr>"
+                      for label, value in boxes)
+            + "</tbody></table></div></div>")
+
+    sent = gestor_pack.sent_on(y, q)
+    gestor = getattr(config, "gestor_email", "")
+    send_button = (
+        f"<form method='post' action='/taxes/{y}/{q}/send' onsubmit=\"return confirm("
+        f"'¿Enviar la documentación del {taxes.label(y, q)} a {html.escape(gestor)}?')\">"
+        f"<button class='btn-primary'>📧 Enviar al gestor</button></form>"
+        if gestor else
+        "<span class='muted'>Pon el email del gestor en la configuración de la empresa "
+        "para enviárselo con un clic.</span>")
+    pack_card = (
+        "<div class='card'><div class='card-title'>Paquete para el gestor</div>"
+        "<div class='card-hint'>Un ZIP con los libros registro de facturas emitidas y "
+        "recibidas en Excel, el PDF de cada factura y la foto de cada ticket.</div>"
+        + (f"<div class='notice notice-ok'><b>Enviado</b>{html.escape(sent)}</div>"
+           if sent else "")
+        + "<div class='actions'>"
+        f"<a class='btn btn-neutral' href='/taxes/{y}/{q}/pack'>📦 Descargar ZIP</a>"
+        f"{send_button}</div></div>")
+
+    body = (f"<div class='actions' style='margin-bottom:16px'>{tabs}</div>"
+            f"<div class='stats'>{''.join(tiles)}</div>"
+            f"{vat_card}{irpf_card}{pack_card}"
+            "<p class='muted'>Cálculo orientativo con lo registrado en el programa: tu "
+            "gestor lo revisa y lo presenta.</p>")
+    return _page(f"Impuestos del {taxes.label(y, q)}", body, user,
+                 subtitle=f"Plazo de presentación: {taxes.deadline_text(y, q)}",
+                 current="/taxes")
+
+
+@app.get("/taxes/{year}/{quarter}/pack")
+async def taxes_pack(request: Request, year: int, quarter: int):
+    from src import gestor_pack
+
+    user, refusal = _guard(request, "taxes.view")
+    if refusal:
+        return refusal
+    if not 1 <= quarter <= 4:
+        return RedirectResponse("/taxes", status_code=303)
+    path = await asyncio.to_thread(gestor_pack.build_pack, year, quarter)
+    return FileResponse(path, media_type="application/zip", filename=path.name)
+
+
+@app.post("/taxes/{year}/{quarter}/send")
+async def taxes_send(request: Request, year: int, quarter: int):
+    from src import gestor_pack
+
+    user, refusal = _guard(request, "taxes.view")
+    if refusal:
+        return refusal
+    sent, message = await asyncio.to_thread(gestor_pack.email_to_gestor, year, quarter)
+    if not sent:
+        return _page("No se ha enviado",
+                     f"<div class='card'>{html.escape(message)}<div class='actions'>"
+                     f"<a class='btn btn-neutral' href='/taxes?y={year}&q={quarter}'>"
+                     "Volver</a></div></div>", user)
+    return RedirectResponse(f"/taxes?y={year}&q={quarter}", status_code=303)
 
 
 # ── Verifactu ────────────────────────────────────────────────────────────────

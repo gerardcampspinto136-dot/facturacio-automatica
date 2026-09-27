@@ -87,6 +87,15 @@ alerts:
   # Aviso de productos que han llegado a su punto de pedido.
   stock_schedule: "1w"
 
+# ============================================================
+#  EL GESTOR
+#  Cada trimestre el bot calcula el IVA (303) y el IRPF (130) y prepara un
+#  paquete con los libros de facturas, los PDF y los tickets. Con el email
+#  del gestor puesto, se lo manda con un toque.
+# ============================================================
+gestor:
+  email: ""
+
 email:
   subject_template: "Factura {invoice_number} - {company_name}"
   body_template: |

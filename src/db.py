@@ -284,6 +284,8 @@ _ADDED_COLUMNS = {
         ("logo_path", "TEXT"),
         ("configured_at", "TEXT"),
         ("irpf_rate", "REAL"),
+        # Where the quarter's pack goes: the company's gestor or accountant.
+        ("gestor_email", "TEXT"),
     ],
     # What was agreed with each client and should not have to be said twice: whether
     # their invoices carry an IRPF withholding (NULL = the company default).

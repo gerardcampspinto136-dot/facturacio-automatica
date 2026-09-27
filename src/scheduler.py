@@ -136,6 +136,7 @@ def _extra_jobs() -> list:
     for module_name, job_name, attr in (
         ("src.recurring", "recurring_invoices", "run_due"),
         ("src.payment_reminders", "payment_reminders", "run_due"),
+        ("src.gestor_pack", "tax_calendar", "quarter_reminder"),
     ):
         try:
             module = __import__(module_name, fromlist=[attr])

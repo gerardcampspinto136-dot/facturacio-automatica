@@ -112,6 +112,10 @@ class CompanyConfig:
         # The hour of the morning the reminders go out (never after 21:00).
         self.alert_hour = min(max(int(alerts.get("hour", 9) or 9), 0), 20)
 
+        # ── The gestor ───────────────────────────────────────────────────────
+        # Who receives the quarter's pack (invoice books, PDFs, receipts).
+        self.gestor_email = str((data.get("gestor", {}) or {}).get("email", "") or "")
+
         # ── Verifactu ────────────────────────────────────────────────────────
         verifactu = data.get("verifactu", {}) or {}
         # The QR the AEAT requires at the top of every invoice.
@@ -149,6 +153,7 @@ class CompanyConfig:
         take("address")
         take("phone")
         take("invoice_email", "email")
+        take("gestor_email")
         take("iban", "bank_account")
         take("tax_rate", cast=float)
         take("irpf_rate", cast=float)

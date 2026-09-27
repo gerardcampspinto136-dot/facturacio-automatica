@@ -54,6 +54,7 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "contacts.manage":    ("Clientes", "Crear y editar clientes"),
     "users.manage":       ("Administración", "Gestionar las cuentas del equipo"),
     "settings.manage":    ("Administración", "Cambiar la configuración de la empresa"),
+    "taxes.view":         ("Impuestos", "Ver los impuestos y el paquete para el gestor"),
 }
 
 # A sensible starting point when the owner adds someone, so the common case is one
@@ -147,7 +148,7 @@ SETTINGS_FIELDS = (
     "name", "tax_id", "address", "phone", "invoice_email", "iban",
     "tax_rate", "irpf_rate", "payment_terms", "prices_include_tax", "invoice_series",
     "review_mode", "telegram_bot_token", "telegram_chat_id", "logo_path",
-    "contact_email", "notes",
+    "contact_email", "notes", "gestor_email",
 )
 
 # Without these an invoice is not a valid Spanish invoice, so they gate "configured".
@@ -166,7 +167,7 @@ def update_company(company_id: int, **fields) -> None:
                 "telegram_chat_id", "logo_path", "notes"):
         if key in changes and isinstance(changes[key], str):
             changes[key] = changes[key].strip() or None
-    for key in ("invoice_email", "contact_email"):
+    for key in ("invoice_email", "contact_email", "gestor_email"):
         if key in changes:
             changes[key] = normalize_email(changes[key]) or None
     if not changes:
