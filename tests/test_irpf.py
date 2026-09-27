@@ -203,8 +203,10 @@ class TestPanel:
         assert "entre 0 y 50" in page.text
         assert accounts.get_company(company)["irpf_rate"] is None
 
-    def test_a_pending_invoice_can_have_it_changed(self, vendor_client, professional):
-        token = store.add_pending(an_invoice(), "d.pdf")
+    def test_a_pending_invoice_can_have_it_changed(self, vendor_client, professional,
+                                                   tmp_path):
+        # The edit rebuilds the draft PDF, so it must live in the test's own folder.
+        token = store.add_pending(an_invoice(), str(tmp_path / "draft.pdf"))
         vendor_client.post(f"/invoice/{token}/edit", data={
             "client_name": "Estudio Nube S.L.", "client_email": "admin@estudionube.es",
             "item_desc": "Consultoría", "item_qty": "1", "item_price": "1000",

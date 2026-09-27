@@ -47,3 +47,6 @@ Thumbs.db
 
 # Facturas y tickets de proveedor fotografiados
 data/receipts/
+
+# Stray files a test may write to the working directory
+/*.pdf
