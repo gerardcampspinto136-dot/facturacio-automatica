@@ -1,0 +1,7 @@
+# Everything the tests use on top of the application. Not needed on a client's machine.
+-r requirements.txt
+pytest>=8.0.0
+# Validates the electronic invoices against the official Facturae and UBL schemas.
+lxml>=5.0.0
+# Reads generated PDFs back in a few tests. AGPL: used by tests only, never by src/.
+pymupdf>=1.24.0

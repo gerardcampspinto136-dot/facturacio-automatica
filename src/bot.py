@@ -42,8 +42,10 @@ _WELCOME = (
     "factura.\n\n"
     "Comandos:\n"
     "• /ayuda — cómo hablarme y ejemplos\n"
+    "• /fichar — fichar la entrada, la pausa o la salida\n"
     "• /pendientes — facturas esperando aprobación\n"
     "• /factura <número> — el PDF de una factura emitida\n"
+    "• /xml <número> — la misma factura en Facturae, para FACe\n"
     "• /presupuestos — los que esperan respuesta · /recurrentes — las que se repiten\n"
     "• /clientes — clientes que ya tengo guardados\n"
     "• /cancelar — descartar la factura en curso\n"
@@ -104,6 +106,7 @@ _HELP = (
     "`/anular 2026-0007 motivo` — factura rectificativa (devuelve el stock)\n"
     "`/factura 2026-0007` — el PDF de una factura · "
     "`/reenviar 2026-0007` — mandársela otra vez al cliente\n"
+    "`/xml 2026-0007` — en Facturae, para presentarla en FACe (administraciones)\n"
     "`/gasto Ferretería Puig 242,50 F-2026/88` — anotar un gasto sin foto\n"
     "`/pagos` — cobros y pagos pendientes"
 )
@@ -838,6 +841,55 @@ async def cmd_factura(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                                             filename=f"Factura_{number}.pdf")
 
 
+async def cmd_xml(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/xml <número> [ubl]: an issued invoice as an electronic invoice file."""
+    if await _gate(update, "invoices.view") is None:
+        return
+    args = list(context.args or [])
+    if not args:
+        await update.message.reply_text(
+            "Uso: `/xml 2026-0007` — la factura en Facturae, para FACe\n"
+            "`/xml 2026-0007 ubl` — en UBL (EN 16931), para otras plataformas",
+            parse_mode="Markdown")
+        return
+    kind = "ubl" if any(a.lower() == "ubl" for a in args[1:]) else "facturae"
+    await _send_einvoice(update.message, args[0].strip(), kind)
+
+
+async def _send_einvoice(target, number: str, kind: str = "facturae",
+                         caption: str | None = None) -> None:
+    from src import einvoice
+
+    try:
+        xml, filename = await asyncio.to_thread(einvoice.build, number, kind)
+    except einvoice.EInvoiceError as exc:
+        await target.reply_text(f"⚠️ {exc}")
+        return
+    if caption is None:
+        caption = (f"Factura {number} en Facturae 3.2.2.\n\n{einvoice.FACE_STEPS}"
+                   if kind == "facturae" else f"Factura {number} en UBL 2.1 (EN 16931).")
+    await target.reply_document(document=xml, filename=filename, caption=caption)
+
+
+async def _face_copy(target, result) -> None:
+    """A public body pays only what comes in through FACe: hand over that file too."""
+    from src import einvoice
+
+    # The invoice is already issued: nothing here may look like issuing failed.
+    try:
+        if not einvoice.is_public_body(result.invoice):
+            return
+        await _send_einvoice(
+            target, result.number, "facturae",
+            caption=(f"🏛️ {result.invoice.client_name} es una administración pública: "
+                     f"para que la paguen, la factura tiene que entrar por FACe.\n\n"
+                     f"{einvoice.FACE_STEPS}"))
+    except Exception:
+        logger.error("Could not prepare the FACe file for %s", result.number, exc_info=True)
+        await target.reply_text(f"⚠️ No he podido preparar el archivo para FACe. "
+                                f"Pídemelo con /xml {result.number}")
+
+
 def _keyboard(buttons):
     """[(label, data), ...] one per row, or a list of pairs for a row of several."""
     if not buttons:
@@ -1440,6 +1492,7 @@ async def _approve(update, session, user: dict) -> None:
                 reply_markup=_keyboard(_after_issue_buttons(result)),
             )
         await status.delete()
+        await _face_copy(message, result)
     except Exception as exc:
         logger.error("Could not issue the invoice", exc_info=True)
         await status.edit_text(
@@ -1602,6 +1655,7 @@ async def _on_pending_button(update: Update, action: str, token: str) -> None:
             reply_markup=_keyboard(_resend_button(result)),
         )
     await status.delete()
+    await _face_copy(query.message, result)
     await asyncio.to_thread(
         notify.tell_creator, pending,
         f"✅ {approver} ha aprobado tu factura para {invoice.client_name}: "
@@ -1792,6 +1846,7 @@ _MENU = [
     ("fichar", "Fichar la entrada, la pausa o la salida"),
     ("pendientes", "Facturas esperando aprobación"),
     ("factura", "El PDF de una factura emitida"),
+    ("xml", "Una factura en formato electrónico (FACe)"),
     ("presupuestos", "Presupuestos esperando respuesta"),
     ("recurrentes", "Facturas que se repiten cada mes"),
     ("cobrada", "Marcar una factura como cobrada"),
@@ -1831,6 +1886,8 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("factura", cmd_factura))
     app.add_handler(CommandHandler("facturas", cmd_factura))
     app.add_handler(CommandHandler("reenviar", cmd_reenviar))
+    app.add_handler(CommandHandler("xml", cmd_xml))
+    app.add_handler(CommandHandler("facturae", cmd_xml))
     app.add_handler(CommandHandler("trimestre", cmd_trimestre))
     app.add_handler(CommandHandler("cobrada", cmd_cobrada))
     app.add_handler(CommandHandler("cobradas", cmd_cobrada))

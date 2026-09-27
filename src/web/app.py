@@ -16,11 +16,12 @@ import asyncio
 import html
 import logging
 import os
+import re
 from pathlib import Path
 from datetime import date, datetime
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
 from src import accounts, bills, finalize, rectify, store
 from src.totals import compute_totals, format_money as _fmt, irpf_rate, vat_rate
@@ -451,6 +452,15 @@ input:focus, textarea:focus, select:focus {
 }
 .empty-title { font-weight: 600; color: var(--text); margin-bottom: 4px; }
 
+/* A few extra links folded behind one button, opening in place (a table cell scrolls,
+   so a floating menu would be clipped). */
+.fold > summary { list-style: none; cursor: pointer; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold-links { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.fold-links a { font-size: 12.5px; white-space: nowrap; }
+.section-title { font-weight: 600; margin: 18px 0 2px; }
+.grid-3 { display: grid; gap: 0 16px; grid-template-columns: 1fr 1fr 1fr; }
+
 /* ── Small screens ────────────────────────────────────────────────────────── */
 @media (max-width: 860px) {
   .shell { flex-direction: column; }
@@ -463,7 +473,7 @@ input:focus, textarea:focus, select:focus {
   .nav .count { margin-left: 6px; }
   .whoami { border-top: 0; border-bottom: 1px solid var(--border); }
   .content { padding: 18px 16px 50px; }
-  .grid-2, .perms { grid-template-columns: 1fr; columns: 1; }
+  .grid-2, .grid-3, .perms { grid-template-columns: 1fr; columns: 1; }
 }
 """
 
@@ -978,6 +988,12 @@ async def issued(request: Request):
     this_year = str(date.today().year)
     turnover = sum(_totals(r["invoice"])[0] for r in records
                    if r["invoice"].date.isoformat().startswith(this_year))
+    # Clients invoiced through FACe: their menu leads with the file FACe takes.
+    from src import contacts
+
+    public_bodies = {c["id"] for c in contacts.list_all(contacts.CLIENT, include_inactive=True)
+                     if c.get("dir3_accounting") or c.get("dir3_managing")
+                     or c.get("dir3_processing")}
 
     rows = []
     for r in records:
@@ -1001,7 +1017,12 @@ async def issued(request: Request):
                       f"title='{html.escape(r['email_error'])}'>email no enviado</span>")
 
         actions = [f"<a class='btn btn-neutral btn-sm' href='/issued/{number}/pdf' "
-                   f"target='_blank'>PDF</a>"]
+                   f"target='_blank'>PDF</a>",
+                   f"<details class='fold'><summary class='btn btn-neutral btn-sm'>"
+                   f"{'FACe' if inv.contact_id in public_bodies else 'XML'} ▾</summary>"
+                   f"<div class='fold-links'>"
+                   f"<a href='/issued/{number}/xml/facturae'>Facturae (FACe)</a>"
+                   f"<a href='/issued/{number}/xml/ubl'>UBL (EN 16931)</a></div></details>"]
         if may_send and inv.client_email:
             label = "Reintentar envío" if r.get("email_error") else "Reenviar"
             actions.append(
@@ -1066,6 +1087,26 @@ async def issued_pdf(request: Request, number: str):
         return _page("No encontrada", "<div class='card'>Esa factura no existe.</div>", user)
     return FileResponse(path, media_type="application/pdf",
                         filename=f"Factura_{number}.pdf")
+
+
+@app.get("/issued/{number}/xml/{kind}")
+async def issued_xml(request: Request, number: str, kind: str):
+    """The invoice as an electronic invoice file: Facturae for FACe, or UBL."""
+    from src import einvoice
+
+    user, refusal = _guard(request, "invoices.view")
+    if refusal:
+        return refusal
+    if kind not in ("facturae", "ubl"):
+        return _page("No encontrada", "<div class='card'>Ese formato no existe.</div>", user)
+    try:
+        xml, filename = await asyncio.to_thread(einvoice.build, number, kind)
+    except einvoice.EInvoiceError as exc:
+        return _page("Falta un dato", f"<div class='card'>{html.escape(str(exc))}"
+                     "<div class='actions'><a class='btn btn-neutral' href='/issued'>"
+                     "Volver</a></div></div>", user)
+    return Response(xml, media_type="application/xml",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @app.post("/issued/{number}/resend")
@@ -2159,6 +2200,7 @@ async def contact_detail(request: Request, contact_id: int):
         + (field("Retención IRPF (%)", "irpf_rate", contact.get("irpf_rate"), "text",
                  "vacío = la de la empresa") if is_client else "")
         + "</div></div>"
+        + (_dir3_fields(contact, field) if is_client else "")
         + f"<label>Notas</label><textarea name='notes' rows='2'"
         f"{'' if may_edit else ' readonly'}>{html.escape(contact['notes'] or '')}</textarea>"
         + ("<div class='actions'><button class='btn-primary'>Guardar</button>"
@@ -2205,6 +2247,33 @@ async def contact_detail(request: Request, contact_id: int):
                  subtitle="Cliente" if is_client else "Proveedor", current="/contacts")
 
 
+_DIR3 = (("dir3_accounting", "Oficina contable"), ("dir3_managing", "Órgano gestor"),
+         ("dir3_processing", "Unidad tramitadora"))
+
+
+def _dir3_fields(contact: dict, field) -> str:
+    """A public body's three DIR3 codes, folded away for everyone else."""
+    has_codes = any(contact.get(key) for key, _ in _DIR3)
+    return (
+        f"<details class='fold'{' open' if has_codes else ''}>"
+        "<summary class='section-title'>Administración pública (FACe) ▾</summary>"
+        "<p class='muted'>Solo si el cliente es un ayuntamiento, una consejería, una "
+        "universidad… Sus facturas se presentan en FACe, dirigidas con estos tres códigos "
+        "DIR3; te los da el propio organismo (suelen venir en el encargo).</p>"
+        "<div class='grid-3'>"
+        + "".join(f"<div>{field(label, key, contact.get(key))}</div>" for key, label in _DIR3)
+        + "</div></details>")
+
+
+def _clean_dir3(value) -> str | None:
+    """"l01 170 792" -> "L01170792"; ValueError if it cannot be a DIR3 code."""
+    code = re.sub(r"\s", "", value or "").upper()
+    if code and not re.fullmatch(r"[A-Z0-9]{2,10}", code):
+        raise ValueError(f"«{value}» no parece un código DIR3 (son letras y números, "
+                         "como L01170792).")
+    return code or None
+
+
 @app.post("/contacts/{contact_id}")
 async def contact_save(request: Request, contact_id: int):
     from src import contacts
@@ -2234,6 +2303,9 @@ async def contact_save(request: Request, contact_id: int):
         except ValueError:
             pass
     try:
+        for key, _ in _DIR3:
+            if key in form:
+                changes[key] = _clean_dir3(form.get(key))
         contacts.update(contact_id, **changes)
     except Exception as exc:
         return _page("No se pudo guardar", f"<div class='card'>{html.escape(_why(exc))}"

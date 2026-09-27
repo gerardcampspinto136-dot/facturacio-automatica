@@ -415,6 +415,11 @@ _ADDED_COLUMNS = {
     # their invoices carry an IRPF withholding (NULL = the company default).
     "contacts": [
         ("irpf_rate", "REAL"),
+        # A public body invoiced through FACe is addressed by three DIR3 codes: its
+        # accounting office, managing body and processing unit.
+        ("dir3_accounting", "TEXT"),
+        ("dir3_managing", "TEXT"),
+        ("dir3_processing", "TEXT"),
     ],
     # A Telegram account linked to a panel account, so the bot applies the same
     # permissions the web does. The code is a one-time pairing secret with an expiry.

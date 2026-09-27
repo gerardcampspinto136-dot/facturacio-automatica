@@ -44,9 +44,13 @@ A draft consumes **no number** until it is approved, so discarded drafts never l
 | an audio or a text: *«factura para…»* | an invoice: it asks for anything missing, shows it, and sends it on *Enviar* |
 | *«presupuesto para…»* | a quote; *Aceptado → facturar* turns it into the invoice |
 | *«con retención del 15%»*, *«IVA del 10%»* | withholding / VAT rate for that invoice |
-| a photo of a ticket or supplier invoice | an expense, with its deductible VAT |
+| a photo or PDF of a ticket or supplier invoice | an expense, with its deductible VAT |
+| *«¿cuánto he facturado este mes?»*, *«¿quién me debe?»* | the answer, added up from the books (never guessed by the model) |
+| a bank statement (Norma 43, CSV, Excel) | payments matched to invoices and bills; see *Bank statements* |
+| `/fichar` · `/jornada` | clock in, break, clock out · today's and this month's hours |
 | `/pendientes` | drafts waiting for approval, with *Aprobar / Descartar* |
 | `/factura [n]` · `/reenviar n` · `/anular n motivo` | an invoice's PDF · email it again · cancel it |
+| `/xml n` · `/xml n ubl` | the invoice as Facturae (for FACe) · as UBL (EN 16931) |
 | `/cobrada [n]` · `/recordar n` | mark paid (alone: list with buttons) · send a payment reminder |
 | `/recurrentes` · `/presupuestos` | invoices that repeat · quotes waiting for an answer |
 | `/trimestre [T año]` | the quarter's IVA (303) and IRPF (130), and the pack for the gestor |
@@ -103,6 +107,47 @@ To cancel an already-sent invoice, send `/anular <número>` in Telegram (or use 
 on the web *Emitidas* page). This issues a rectifying invoice in its own `R-` series with negated
 amounts, logs it, and emails the client.
 
+## Electronic invoices: FACe and the B2B obligation
+
+- **Public bodies (FACe).** A town hall, a regional ministry or a university only pays
+  invoices that come in through FACe as Facturae XML, addressed with the body's three
+  DIR3 codes. Enter them once on the client's record (*Clientes → Administración
+  pública (FACe)*). From then on, every invoice to that client arrives in the chat with
+  its Facturae file right after the PDF, and the steps: sign it with **AutoFirma** (the
+  government's free signing app) and upload the `.xsig` at face.gob.es. Any invoice's
+  file: `/xml <número>`, or the *XML ▾* menu on *Emitidas*.
+- **Between businesses (RD 238/2026).** Electronic invoicing becomes compulsory for
+  B2B in October 2027 (turnover above 8 M€) and October 2028 (everyone else), in a
+  syntax of the EN 16931 model; the AEAT's free public solution takes UBL. `/xml <n>
+  ubl` produces it today. IRPF withholding, which EN 16931 has no place for, travels
+  as an amount already settled plus UBL's `WithholdingTaxTotal`; the ministerial order
+  with the technical details may settle it differently (`src/einvoice.py`).
+- **Checked against the real schemas.** The tests validate every variant (plain, with
+  IRPF, rectifying, public body, self-employed client, VAT-exempt) against the official
+  Facturae 3.2.2 XSD and OASIS's UBL 2.1 XSDs, and check the EN 16931 sums.
+- **Not built: the XAdES signature.** It needs each client's certificate; AutoFirma
+  does it in one drag and drop meanwhile.
+
+## Bank statements
+
+Upload the statement on the panel's *Banco* page, or send the file to the bot. Norma 43
+(*Cuaderno 43*) and the CSV/Excel export of any bank are read, whatever the columns are
+called. Money in with the same amount and the invoice number or client's name in the
+text marks that invoice paid by itself; the same amount alone is proposed for a human
+to confirm. Payments out are matched to supplier bills the same way, and a charge with
+nothing behind it (the phone, the insurance, bank fees) is one click from being filed
+as an expense. Importing a statement twice adds nothing.
+
+## Working-time record (registro de jornada)
+
+Required for every company with employees (art. 34.9 Estatuto de los Trabajadores).
+Each employee links their Telegram account and presses `/fichar`: entry, breaks and
+exit, stamped with the server's time, chained by SHA-256 and impossible to edit or
+delete. A forgotten exit is fixed by an added, signed correction with its reason, and
+at 20:00 anyone still clocked in gets a reminder. The panel's *Registro de jornada*
+page shows each person's days (employees see only their own) and prints the monthly
+PDF to sign.
+
 ---
 
 ## Checking it all works
@@ -116,6 +161,13 @@ Or double-click **`Comprobar que todo funciona.bat`**. It exercises the real thi
 VAT both ways, gap-free numbering, stock deducted from a dictated invoice line, supplier
 bills, receipt arithmetic, a generated PDF, and that every web page demands a login —
 on a throwaway database, so it never touches real data. Each failure says what to do.
+
+For development, the full test suite:
+
+```
+py -m pip install -r requirements-dev.txt
+py -m pytest -q
+```
 
 ## Running it
 
@@ -423,6 +475,12 @@ that looks wrong can always be traced back.
 │   ├── payment_reminders.py  # Chasing overdue invoices, asking the owner first
 │   ├── recurring.py          # Invoices that repeat every month/quarter/year
 │   ├── quotes.py             # Presupuestos, and turning an accepted one into an invoice
+│   ├── einvoice.py           # Facturae (FACe) and UBL (EN 16931) electronic invoices
+│   ├── bank.py               # Bank statements matched to invoices and bills
+│   ├── timeclock.py          # The working-time record (registro de jornada)
+│   ├── assistant.py          # What a message is asking for (invoice, expense, question)
+│   ├── answers.py            # Questions about the business, answered from the books
+│   ├── backup.py             # Daily copies of the data, and restoring one
 │   ├── web/app.py            # FastAPI review page (Google login)
 │   ├── web/admin.py          # Team panel and vendor panel
 │   └── bot.py                # Telegram bot handlers

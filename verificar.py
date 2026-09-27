@@ -249,6 +249,18 @@ def check_verifactu():
     return "ok", f"huella según la AEAT · {count} registro(s), cadena íntegra"
 
 
+def check_einvoice():
+    """The company's own details are enough for an electronic invoice (FACe)."""
+    from src import einvoice
+
+    try:
+        seller = einvoice._seller()
+    except einvoice.EInvoiceError as exc:
+        return "warn", f"Para facturar a administraciones (FACe): {exc}"
+    place = seller["place"]
+    return "ok", f"Facturae y UBL · {place['post_code']} {place['town']} ({place['province']})"
+
+
 def check_backups():
     """When the last copy of the books was made, and whether it goes off the machine."""
     from datetime import datetime
@@ -381,6 +393,7 @@ def main() -> int:
     run("Lectura de tickets", check_receipt_reading)
     run("Generación del PDF", check_pdf)
     run("Verifactu (huella y registro)", check_verifactu)
+    run("Factura electrónica (FACe)", check_einvoice)
     run("Copias de seguridad", check_backups)
     run("Web y control de acceso", check_web)
 
