@@ -645,6 +645,9 @@ async def company_settings(request: Request, company_id: int):
         "<div class='card'><b>Facturación</b>"
         + _field("IVA por defecto (%)", "tax_rate", company.get("tax_rate") or 21,
                  "21, 10 o 4", "number")
+        + _field("Retención de IRPF por defecto (%)", "irpf_rate",
+                 company.get("irpf_rate") or 0,
+                 "0 si no aplica · 15 profesionales · 7 los primeros años", "number")
         + _field("Forma de pago", "payment_terms",
                  company.get("payment_terms") or "30 días")
         + _field("Serie de numeración", "invoice_series",
@@ -709,6 +712,17 @@ async def company_settings_save(request: Request, company_id: int):
         values["tax_rate"] = float(str(values.get("tax_rate", "21")).replace(",", "."))
     except ValueError:
         values.pop("tax_rate", None)
+    if "irpf_rate" in values:
+        try:
+            values["irpf_rate"] = float(str(values["irpf_rate"] or "0").replace(",", "."))
+        except ValueError:
+            return _error(user, "Retención no válida",
+                          "La retención de IRPF tiene que ser un número (0, 7, 15...).",
+                          f"/admin/{company_id}/settings")
+        if not 0 <= values["irpf_rate"] <= 50:
+            return _error(user, "Retención no válida",
+                          "La retención de IRPF tiene que estar entre 0 y 50.",
+                          f"/admin/{company_id}/settings")
     values["prices_include_tax"] = 1 if form.get("prices_include_tax") == "1" else 0
     if values.get("review_mode") not in ("manual", "auto"):
         values.pop("review_mode", None)

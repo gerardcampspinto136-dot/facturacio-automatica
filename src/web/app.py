@@ -22,7 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from src import accounts, bills, finalize, rectify, store
-from src.totals import compute_totals, format_money as _fmt
+from src.totals import compute_totals, format_money as _fmt, irpf_rate, vat_rate
 from src.config_loader import get_config
 from src.invoice_generator import generate_invoice_pdf
 from src.models import InvoiceData, InvoiceItem
@@ -787,7 +787,16 @@ async def edit_form(request: Request, token: str):
         f"<label>NIF/CIF</label><input name='client_id' value='{html.escape(inv.client_id or '')}'>"
         f"<label>Conceptos</label>"
         f"<table><tr><th>Descripción</th><th>Cant.</th><th>Precio unit.</th></tr>"
-        f"{''.join(item_rows)}</table>"
+        f"{''.join(item_rows)}"
+        # One empty row, so a line forgotten in the dictation can be added here.
+        f"<tr><td><input name='item_desc' placeholder='Añadir un concepto'></td>"
+        f"<td><input name='item_qty' value='1' style='width:80px'></td>"
+        f"<td><input name='item_price' style='width:100px'></td></tr></table>"
+        f"<div class='grid-2'>"
+        f"<div><label>IVA (%)</label><input name='tax_rate' "
+        f"value='{vat_rate(inv):g}'></div>"
+        f"<div><label>Retención IRPF (%) <span class='field-hint'>0 si no lleva</span>"
+        f"</label><input name='irpf_rate' value='{irpf_rate(inv):g}'></div></div>"
         f"<label>Notas</label><textarea name='notes' rows='2'>{html.escape(inv.notes or '')}</textarea>"
         f"<div class='actions'><button class='btn-primary'>Guardar cambios</button>"
         f"<a class='btn btn-neutral' href='/'>Cancelar</a></div>"
@@ -812,6 +821,15 @@ async def edit_submit(request: Request, token: str):
     inv.client_address = form.get("client_address", "").strip() or None
     inv.client_id = form.get("client_id", "").strip() or None
     inv.notes = form.get("notes", "").strip() or None
+    for field, top in (("tax_rate", 30), ("irpf_rate", 50)):
+        raw = str(form.get(field, "")).strip().replace(",", ".")
+        if raw:
+            try:
+                value = float(raw)
+            except ValueError:
+                continue
+            if 0 <= value <= top:
+                setattr(inv, field, value)
 
     descs = form.getlist("item_desc")
     qtys = form.getlist("item_qty")

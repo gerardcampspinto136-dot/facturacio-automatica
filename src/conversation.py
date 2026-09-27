@@ -20,8 +20,8 @@ from typing import Optional
 from src import checklist, contacts
 from src.config_loader import get_config
 from src.models import InvoiceData
-from src.totals import (compute_totals, format_money, normalize_prices, summary_lines,
-                        vat_rate)
+from src.totals import (compute_totals, format_money, irpf_rate, normalize_prices,
+                        rate_label, summary_lines, vat_rate)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,10 @@ class Session:
     # May the person dictating send it to the client themselves? Someone without the
     # approval permission gets "send for review" instead of "send".
     can_send: bool = True
+    # Was the IRPF withholding decided for this invoice (said out loud, or changed with
+    # the button)? Then it is remembered for the client, so next time it is right
+    # without anyone having to say it again.
+    irpf_explicit: bool = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -101,6 +105,7 @@ class Session:
         self.awaiting = None
         self.candidates = []
         self.token = None
+        self.irpf_explicit = False
 
     @property
     def active(self) -> bool:
@@ -113,6 +118,7 @@ class Session:
         self.reset()
         self.can_send = can_send
         self.invoice = invoice
+        self.irpf_explicit = invoice.irpf_rate is not None
         return self._resolve_client()
 
     def handle_text(self, text: str) -> list[Reply]:
@@ -210,6 +216,9 @@ class Session:
             inv.client_id = contact["tax_id"]
         if not (inv.client_address or "").strip() and contact.get("address"):
             inv.client_address = contact["address"]
+        # What was settled with this client last time, unless something else was said.
+        if inv.irpf_rate is None and contact.get("irpf_rate") is not None:
+            inv.irpf_rate = contact["irpf_rate"]
 
     # ── The checklist ────────────────────────────────────────────────────────
 
@@ -245,6 +254,11 @@ class Session:
             self.invoice.prices_normalized = False
             if parsed.prices_include_tax is not None:
                 self.invoice.prices_include_tax = parsed.prices_include_tax
+            if parsed.tax_rate is not None:
+                self.invoice.tax_rate = parsed.tax_rate
+            if parsed.irpf_rate is not None:
+                self.invoice.irpf_rate = parsed.irpf_rate
+                self.irpf_explicit = True
             self.awaiting = None
             return self._ask_next()
 
@@ -289,10 +303,22 @@ class Session:
         elif inv.client_id and not checklist.looks_spanish_tax_id(inv.client_id):
             lines.append(f"⚠️ «{inv.client_id}» no tiene forma de NIF/CIF español. "
                          "Lo uso igual, pero compruébalo.")
+        withholding = irpf_rate(inv, config)
+        if withholding and inv.client_id == "SIN NIF":
+            lines.append("⚠️ Lleva retención de IRPF, pero a un particular no se le "
+                         "aplica. Quítala con el botón si es el caso.")
         lines.append("")
         lines.append(summary_lines(inv, config))
         if inv.notes:
             lines.append(f"\nObservaciones: {inv.notes}")
+
+        # Offered only where it can matter: an invoice that carries a withholding, or a
+        # company that normally applies one. Everyone else never sees the button.
+        irpf_button = []
+        if withholding:
+            irpf_button = [("➖ Quitar retención", "toggle_irpf")]
+        elif float(getattr(config, "irpf_rate", 0) or 0):
+            irpf_button = [(f"➕ Retención {rate_label(config.irpf_rate)}%", "toggle_irpf")]
 
         if self.can_send:
             lines.append(f"\n¿La envío a {inv.client_email}?")
@@ -300,6 +326,7 @@ class Session:
                 ("✅ Enviar", "approve"),
                 ("💾 Guardar sin enviar", "hold"),
                 ("🔄 Cambiar IVA", "toggle_tax"),
+                *irpf_button,
                 ("❌ Descartar", "cancel"),
             ]
         else:
@@ -310,10 +337,33 @@ class Session:
             buttons = [
                 ("📤 Mandar a revisión", "approve"),
                 ("🔄 Cambiar IVA", "toggle_tax"),
+                *irpf_button,
                 ("❌ Descartar", "cancel"),
             ]
 
         return [Reply("\n".join(lines), buttons=buttons)]
+
+    def toggle_irpf(self) -> list[Reply]:
+        """Put the IRPF withholding on or take it off, and remember it for this client."""
+        config = get_config()
+        if irpf_rate(self.invoice, config):
+            self.invoice.irpf_rate = 0.0
+            state = "sin retención de IRPF"
+        else:
+            self.invoice.irpf_rate = float(getattr(config, "irpf_rate", 0) or 0) or 15.0
+            state = f"con retención del {rate_label(self.invoice.irpf_rate)}%"
+        self.irpf_explicit = True
+        return [Reply(f"Cambiado a *{state}*.")] + self._present()
+
+    def remember_terms(self) -> None:
+        """Keep what was decided for this client for their next invoice."""
+        inv = self.invoice
+        if inv is None or inv.contact_id is None or not self.irpf_explicit:
+            return
+        try:
+            contacts.update(inv.contact_id, irpf_rate=inv.irpf_rate)
+        except Exception:
+            logger.exception("Could not remember the client's withholding")
 
     def toggle_tax(self) -> list[Reply]:
         """Flip between VAT-inclusive and VAT-on-top, recomputing from the original figures."""

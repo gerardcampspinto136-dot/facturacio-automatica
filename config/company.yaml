@@ -27,6 +27,12 @@ company:
 
 invoice:
   tax_rate: 21            # Porcentaje de IVA
+  # Retención de IRPF que el cliente descuenta de cada factura: 0 si la empresa no
+  # la aplica, 15 para un profesional, 7 los primeros años de actividad. Se puede
+  # quitar o poner en cada factura, y el bot recuerda lo de cada cliente.
+  irpf_rate: 0
+  # Serie de numeración: vacía → 2026-0001, "A" → A-2026-0001.
+  series: ""
   currency: "EUR"
   currency_symbol: "€"
   payment_terms: "30 días"

@@ -145,7 +145,7 @@ def list_companies(include_suspended: bool = True) -> list[dict]:
 # form rather than a hand-edited YAML file on their machine.
 SETTINGS_FIELDS = (
     "name", "tax_id", "address", "phone", "invoice_email", "iban",
-    "tax_rate", "payment_terms", "prices_include_tax", "invoice_series",
+    "tax_rate", "irpf_rate", "payment_terms", "prices_include_tax", "invoice_series",
     "review_mode", "telegram_bot_token", "telegram_chat_id", "logo_path",
     "contact_email", "notes",
 )

@@ -59,7 +59,12 @@ _HELP = (
     "• «300 euros *IVA incluido*» → 247,93 de base, 300 en total\n"
     "• Si no dices nada, uso lo que tengas puesto en `company.yaml` "
     "(`prices_include_tax`).\n"
-    "También puedes cambiarlo con el botón *Cambiar IVA* antes de enviar.\n\n"
+    "También puedes cambiarlo con el botón *Cambiar IVA* antes de enviar.\n"
+    "• «IVA del 10%» o «exento de IVA» → otro tipo solo para esa factura\n\n"
+    "*Retención de IRPF*\n"
+    "«con retención del 15%» o «sin retención». Si tu empresa la aplica siempre, "
+    "sale sola; el botón *Quitar retención* la quita, y me acuerdo de lo de cada "
+    "cliente para la próxima vez.\n\n"
     "*Datos obligatorios*\n"
     "Nombre, concepto e importe, email y NIF/CIF. Si falta algo te lo pregunto "
     "uno a uno. Lo que exijo se configura en `required_fields`.\n\n"
@@ -799,6 +804,7 @@ async def _approve(update, session, user: dict) -> None:
         saved_note = ""
         if session.contact_is_new() and session.save_contact():
             saved_note = f"\n\n💾 He guardado a {invoice.client_name} en tus clientes."
+        session.remember_terms()
 
         # Numbering, PDF, Sheets and Gmail: slow and blocking, so off the event loop.
         result = await asyncio.to_thread(finalize.issue, invoice)
@@ -855,6 +861,7 @@ async def _queue(update, session, user: dict, ask_for_approval: bool) -> None:
         # Remember a new client now: whoever approves it later should not lose them.
         if session.contact_is_new():
             session.save_contact()
+        session.remember_terms()
 
         token = store.new_token()
         draft_path = finalize.draft_path(token)
@@ -1056,6 +1063,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if data == "toggle_tax":
         await query.edit_message_reply_markup(reply_markup=None)
         await _send(query.message, session.toggle_tax())
+        return
+
+    if data == "toggle_irpf":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await _send(query.message, session.toggle_irpf())
         return
 
     if data.startswith("contact:"):

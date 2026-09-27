@@ -48,7 +48,9 @@ JSON schema:
     }
   ],
   "notes": "string or null",
-  "prices_include_tax": "true | false | null"
+  "prices_include_tax": "true | false | null",
+  "irpf_rate": "number or null",
+  "tax_rate": "number or null"
 }
 
 Rules:
@@ -68,13 +70,26 @@ Rules:
 - Use null for anything genuinely not mentioned. Never invent an email or a tax id.
 - prices_include_tax records how the amounts were quoted, and is NOT a note:
     true  if the speaker said the price already contains VAT — "IVA incluido",
-          "con IVA", "IVA inclòs", "amb IVA", "VAT included", "todo incluido".
+          "IVA inclòs", "VAT included", "todo incluido", or a bare "con IVA" /
+          "amb IVA" with no rate after it ("300 euros con IVA").
     false if the speaker said VAT goes on top — "más IVA", "mas IVA", "sin IVA",
           "más el IVA", "més IVA", "IVA aparte", "plus VAT".
     null  if they did not say either way.
   Never put the VAT instruction in "notes" and never change the amounts yourself:
   report the figures exactly as spoken and let prices_include_tax say what they mean.
-- "notes" is only for a genuine remark about the job. If there is none, use null."""
+- irpf_rate is the IRPF withholding ("retención") percentage, only if the speaker
+  mentions one: "con retención del 15%", "retención del siete por ciento",
+  "amb retenció del 15" -> 15 or 7; "sin retención", "sense retenció" -> 0;
+  not mentioned -> null.
+- tax_rate is the VAT percentage, only if the speaker states a rate: "IVA del 10%",
+  "al cuatro por ciento de IVA", "IVA reducido del 10" -> 10 or 4; "exento de IVA",
+  "exempt d'IVA" -> 0; not mentioned -> null. "más IVA", "sin IVA" and "IVA incluido"
+  say how the price was quoted -- that is prices_include_tax -- NOT the rate.
+- Naming a rate does not say the price includes it: "con IVA del 10%" and "amb IVA
+  del deu per cent" set tax_rate and leave prices_include_tax null, unless the speaker
+  ALSO says it is included ("IVA del 10% incluido" -> tax_rate 10, true).
+- "notes" is only for a genuine remark about the job. If there is none, use null.
+  Never put the VAT, the withholding or how the price was quoted in "notes"."""
 
 
 def _which_provider() -> str:
@@ -261,4 +276,19 @@ def parse_invoice_from_transcript(transcript: str) -> InvoiceData:
         items=items,
         notes=data.get("notes"),
         date=date.today(),
+        irpf_rate=_rate(data.get("irpf_rate"), maximum=50),
+        tax_rate=_rate(data.get("tax_rate"), maximum=30),
     )
+
+
+def _rate(value, maximum: float):
+    """A percentage the model reported, or None when absent or implausible.
+
+    A model that mishears "IVA al 10" as 100 must not produce an invoice at 100% VAT;
+    an out-of-range figure is dropped, which falls back to the company default and is
+    visible in the summary before anything is sent.
+    """
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    rate = _number(value, default=-1)
+    return rate if 0 <= rate <= maximum else None

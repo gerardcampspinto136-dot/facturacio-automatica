@@ -283,6 +283,12 @@ _ADDED_COLUMNS = {
         ("telegram_chat_id", "TEXT"),
         ("logo_path", "TEXT"),
         ("configured_at", "TEXT"),
+        ("irpf_rate", "REAL"),
+    ],
+    # What was agreed with each client and should not have to be said twice: whether
+    # their invoices carry an IRPF withholding (NULL = the company default).
+    "contacts": [
+        ("irpf_rate", "REAL"),
     ],
     # A Telegram account linked to a panel account, so the bot applies the same
     # permissions the web does. The code is a one-time pairing secret with an expiry.
