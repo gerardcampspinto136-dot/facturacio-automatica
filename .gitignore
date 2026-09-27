@@ -50,3 +50,7 @@ data/receipts/
 
 # Stray files a test may write to the working directory
 /*.pdf
+
+# Generated documents full of client data: never to the (public) repo
+data/gestor/
+data/presupuestos/
