@@ -587,6 +587,14 @@ def _money(value: float) -> str:
     return _fmt(value, get_config())
 
 
+def _es_date(iso: str) -> str:
+    """2026-10-02 -> 02/10/2026, the way dates are written everywhere else here."""
+    try:
+        return date.fromisoformat(iso).strftime("%d/%m/%Y")
+    except (TypeError, ValueError):
+        return iso or ""
+
+
 def _totals(invoice: InvoiceData):
     return compute_totals(invoice, get_config())
 
@@ -1482,9 +1490,9 @@ async def bills_page(request: Request):
     for b in unpaid:
         due = b["due_date"] or ""
         if due and due < today:
-            when = f"<span class='badge badge-danger'>venció el {due}</span>"
+            when = f"<span class='badge badge-danger'>venció el {_es_date(due)}</span>"
         elif due:
-            when = f"<span class='muted'>vence el {due}</span>"
+            when = f"<span class='muted'>vence el {_es_date(due)}</span>"
         else:
             when = "<span class='muted'>sin vencimiento</span>"
 
@@ -1587,7 +1595,7 @@ async def receivables_page(request: Request):
             when = (f"<span class='badge badge-danger'>{u['days_overdue']} día(s) "
                     f"de retraso</span>")
         else:
-            when = f"<span class='muted'>vence el {u['due_date']}</span>"
+            when = f"<span class='muted'>vence el {_es_date(u['due_date'])}</span>"
 
         chasing = ""
         if u["reminder_count"]:

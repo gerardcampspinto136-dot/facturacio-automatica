@@ -286,13 +286,18 @@ def check_groq():
     if not os.getenv("GROQ_API_KEY"):
         return "skip", "sin GROQ_API_KEY"
     models = {m.id for m in Groq(api_key=os.environ["GROQ_API_KEY"]).models.list().data}
-    from src.parser import GROQ_MODEL
-    from src.receipts import GROQ_VISION_MODEL
+    from src.parser import GROQ_FALLBACK_MODEL, GROQ_MODEL
+    from src.receipts import GROQ_VISION_FALLBACK, GROQ_VISION_MODEL
+    from src.transcription import GROQ_STT_FALLBACK, GROQ_STT_MODEL
 
-    missing = [m for m in (GROQ_MODEL, GROQ_VISION_MODEL) if m not in models]
+    # The fallbacks too: Groq withdraws models, and a fallback that no longer exists
+    # is only discovered on the busy day it is needed.
+    wanted = [m for m in (GROQ_MODEL, GROQ_FALLBACK_MODEL, GROQ_VISION_MODEL,
+                          GROQ_VISION_FALLBACK, GROQ_STT_MODEL, GROQ_STT_FALLBACK) if m]
+    missing = [m for m in wanted if m not in models]
     if missing:
         return "warn", f"Estos modelos ya no están disponibles: {', '.join(missing)}"
-    return "ok", f"texto y visión disponibles ({len(models)} modelos)"
+    return "ok", f"voz, texto y visión disponibles, con sus reservas ({len(wanted)} modelos)"
 
 
 def check_google():

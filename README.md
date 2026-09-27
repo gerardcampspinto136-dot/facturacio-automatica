@@ -37,6 +37,24 @@ Decided **per person**, by the permission *Aprobar y enviar facturas* (Equipo):
 
 A draft consumes **no number** until it is approved, so discarded drafts never leave gaps.
 
+## Everything the bot understands
+
+| Say or send | What happens |
+|---|---|
+| an audio or a text: *«factura para…»* | an invoice: it asks for anything missing, shows it, and sends it on *Enviar* |
+| *«presupuesto para…»* | a quote; *Aceptado → facturar* turns it into the invoice |
+| *«con retención del 15%»*, *«IVA del 10%»* | withholding / VAT rate for that invoice |
+| a photo of a ticket or supplier invoice | an expense, with its deductible VAT |
+| `/pendientes` | drafts waiting for approval, with *Aprobar / Descartar* |
+| `/factura [n]` · `/reenviar n` · `/anular n motivo` | an invoice's PDF · email it again · cancel it |
+| `/cobrada [n]` · `/recordar n` | mark paid (alone: list with buttons) · send a payment reminder |
+| `/recurrentes` · `/presupuestos` | invoices that repeat · quotes waiting for an answer |
+| `/trimestre [T año]` | the quarter's IVA (303) and IRPF (130), and the pack for the gestor |
+| `/pagos` · `/clientes` · `/stock` | who owes what · stored clients · what is in stock |
+| `/producto` `/entrada` `/salida` `/inventario` | catalog and stock movements |
+
+Under every invoice issued there is also *🔁 Repetir cada mes*.
+
 ## Quarterly taxes and the gestor
 
 Everything needed for the quarter's returns is already recorded, so the software adds
@@ -251,7 +269,7 @@ copy .env.example .env
 6. Save it as `config/credentials/google_credentials.json`
 7. On first run the browser will open for authorisation — follow the prompts
 
-### 5 — (Manual mode only) Set up the web review page
+### 5 — Set up the web panel's Google sign-in
 
 The review page authenticates reviewers with **Google Sign-In**:
 
@@ -277,8 +295,8 @@ redirect URI) to that public URL.
 py main.py
 ```
 
-In `manual` mode this also starts the web review app (`review.web.host:port`) and the reminder
-scheduler. In `auto` mode only the Telegram bot runs.
+This starts the Telegram bot, the web panel (`review.web.host:port`) and the scheduler that
+sends the reminders, the quarterly tax calendar, recurring invoices and payment reminders.
 
 ---
 
@@ -367,11 +385,12 @@ that looks wrong can always be traced back.
 │   ├── company.yaml          # Edit this with your company details
 │   ├── logo.png              # Your company logo (add manually)
 │   └── credentials/          # Google OAuth files (gitignored)
-├── data/
-│   └── invoices/             # Generated PDFs (gitignored)
-├── data/
-│   ├── facturacio.db         # SQLite: invoices, contacts, products, bills
-│   └── receipts/             # Photographed supplier documents (gitignored)
+├── data/                     # all gitignored: this is the client's data
+│   ├── facturacio.db         # SQLite: invoices, contacts, products, bills, Verifactu
+│   ├── invoices/             # Invoice PDFs (and borradores/ for drafts)
+│   ├── presupuestos/         # Quote PDFs
+│   ├── gestor/               # The quarterly packs for the gestor
+│   └── receipts/             # Photographed supplier documents
 ├── src/
 │   ├── models.py             # InvoiceData and InvoiceItem dataclasses
 │   ├── config_loader.py      # Loads company.yaml
@@ -395,7 +414,15 @@ that looks wrong can always be traced back.
 │   ├── rectify.py            # Contra / rectifying invoices
 │   ├── notify.py             # Money digest and reviewer reminders
 │   ├── scheduler.py          # Batched reminders (reviews, money, stock)
-│   ├── accounts.py           # Companies, accounts, roles and permissions
+│   ├── accounts.py           # Companies, accounts, roles, permissions, Telegram linking
+│   ├── telegram_access.py    # Who may use the bot, and as whom
+│   ├── telegram_api.py       # Messages and files to Telegram from the web and scheduler
+│   ├── verifactu.py          # The chained Verifactu register and the invoice QR
+│   ├── taxes.py              # Modelo 303 and 130 from the recorded invoices and bills
+│   ├── gestor_pack.py        # The quarter's ZIP for the gestor, and its calendar
+│   ├── payment_reminders.py  # Chasing overdue invoices, asking the owner first
+│   ├── recurring.py          # Invoices that repeat every month/quarter/year
+│   ├── quotes.py             # Presupuestos, and turning an accepted one into an invoice
 │   ├── web/app.py            # FastAPI review page (Google login)
 │   ├── web/admin.py          # Team panel and vendor panel
 │   └── bot.py                # Telegram bot handlers
