@@ -125,6 +125,16 @@ class CompanyConfig:
             "subject_template", "Recordatorio de pago — factura {invoice_number}")
         self.collections_body = collections.get("body_template", "") or ""
 
+        # ── Backups ──────────────────────────────────────────────────────────
+        backup = data.get("backup", {}) or {}
+        self.backup_keep = max(int(backup.get("keep", 30) or 30), 1)
+        # A folder on THIS machine (OneDrive, a USB disk) belongs in .env, which is
+        # per-machine, rather than in this file, which is the shared template.
+        self.backup_copy_to = (os.getenv("BACKUP_COPY_TO")
+                               or str(backup.get("copy_to", "") or ""))
+        email = os.getenv("BACKUP_EMAIL", backup.get("email", "auto"))
+        self.backup_email = "" if email is None else str(email)
+
         # ── Quotes ───────────────────────────────────────────────────────────
         self.quote_validity_days = int((data.get("quotes", {}) or {}).get(
             "validity_days", 30) or 30)

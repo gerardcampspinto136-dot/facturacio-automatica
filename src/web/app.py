@@ -16,7 +16,7 @@ import asyncio
 import html
 import logging
 import os
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -485,6 +485,7 @@ _NAV = (
     )),
     ("Administración", (
         ("users.manage", "/team", "◍", "Equipo"),
+        ("settings.manage", "/backups", "⛁", "Copias de seguridad"),
         ("companies.manage", "/admin", "⌂", "Empresas"),
     )),
 )
@@ -1416,6 +1417,76 @@ async def taxes_send(request: Request, year: int, quarter: int):
                      f"<a class='btn btn-neutral' href='/taxes?y={year}&q={quarter}'>"
                      "Volver</a></div></div>", user)
     return RedirectResponse(f"/taxes?y={year}&q={quarter}", status_code=303)
+
+
+# ── Backups ──────────────────────────────────────────────────────────────────
+
+@app.get("/backups", response_class=HTMLResponse)
+async def backups_page(request: Request):
+    from src import backup
+
+    user, refusal = _guard(request, "settings.manage")
+    if refusal:
+        return refusal
+    config = get_config()
+    last = backup.last_backup()
+    copies = backup.list_backups()
+    offsite = [where for where in (config.backup_copy_to, backup.email_address()) if where]
+
+    if last is None:
+        status = ("<div class='notice notice-warn'><b>Todavía no hay copias.</b>Se hace "
+                  "una cada día con el bot en marcha. Puedes hacer la primera ahora.</div>")
+    elif not offsite:
+        status = ("<div class='notice notice-warn'><b>Las copias solo están en este "
+                  "ordenador.</b>Si el disco falla se pierden con él. Pon en "
+                  "<code>config/company.yaml</code> una carpeta de OneDrive o Google Drive "
+                  "(<code>backup.copy_to</code>) o un email (<code>backup.email</code>).</div>")
+    else:
+        status = ("<div class='notice notice-ok'><b>✅ Copias al día.</b>Última: "
+                  f"{last.strftime('%d/%m/%Y %H:%M')}. También se guardan en: "
+                  f"{html.escape(', '.join(offsite))}.</div>")
+
+    rows = "".join(
+        f"<tr><td class='strong'>{html.escape(p.name)}</td>"
+        f"<td class='muted'>{datetime.fromtimestamp(p.stat().st_mtime).strftime('%d/%m/%Y %H:%M')}</td>"
+        f"<td class='num'>{p.stat().st_size / 1024:,.0f} KB</td>"
+        f"<td><a class='btn btn-neutral btn-sm' href='/backups/{html.escape(p.name)}'>"
+        f"Descargar</a></td></tr>"
+        for p in copies[:60]
+    )
+    table = ("<div class='card'><div class='table-wrap'><table><thead><tr>"
+             "<th>Copia</th><th>Hecha</th><th class='num'>Tamaño</th><th></th></tr></thead>"
+             f"<tbody>{rows}</tbody></table></div></div>") if copies else ""
+    action = ("<form method='post' action='/backups/now'>"
+              "<button class='btn-primary'>Hacer una copia ahora</button></form>")
+    return _page("Copias de seguridad", status + table, user,
+                 subtitle=f"Diarias, se guardan las últimas {config.backup_keep}",
+                 current="/backups", actions=action)
+
+
+@app.post("/backups/now")
+async def backups_now(request: Request):
+    from src import backup
+
+    _user_, refusal = _guard(request, "settings.manage")
+    if refusal:
+        return refusal
+    await asyncio.to_thread(backup.make_backup)
+    return RedirectResponse("/backups", status_code=303)
+
+
+@app.get("/backups/{name}")
+async def backups_download(request: Request, name: str):
+    from src import backup
+
+    user, refusal = _guard(request, "settings.manage")
+    if refusal:
+        return refusal
+    # Only a name from the list: never a path someone typed.
+    match = next((p for p in backup.list_backups() if p.name == name), None)
+    if match is None:
+        return _page("No encontrada", "<div class='card'>Esa copia no existe.</div>", user)
+    return FileResponse(match, media_type="application/zip", filename=match.name)
 
 
 # ── Verifactu ────────────────────────────────────────────────────────────────

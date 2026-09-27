@@ -137,6 +137,7 @@ def _extra_jobs() -> list:
         ("src.recurring", "recurring_invoices", "run_due"),
         ("src.payment_reminders", "payment_reminders", "run_due"),
         ("src.gestor_pack", "tax_calendar", "quarter_reminder"),
+        ("src.backup", "backup", "run_due"),
     ):
         try:
             module = __import__(module_name, fromlist=[attr])

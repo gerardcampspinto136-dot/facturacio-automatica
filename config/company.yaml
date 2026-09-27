@@ -108,6 +108,18 @@ collections:
   body_template: ""
 
 # ============================================================
+#  COPIAS DE SEGURIDAD
+#  Cada día se hace una copia de la base de datos en data/backups/.
+#  Una copia en el mismo ordenador no salva de un disco roto: pon
+#  también copy_to (una carpeta de OneDrive/Google Drive, un USB...).
+# ============================================================
+backup:
+  keep: 30                 # cuántas copias diarias se guardan
+  copy_to: ""              # p. ej. "C:/Users/NOMBRE/OneDrive/Copias facturacion"
+  email: "auto"            # copia semanal por email: "auto" = al email de la empresa,
+                           # o una dirección, o "" para no enviarla
+
+# ============================================================
 #  PRESUPUESTOS
 #  «Presupuesto para…» en vez de «factura para…». Cuando el cliente
 #  acepta, un toque lo convierte en la factura.

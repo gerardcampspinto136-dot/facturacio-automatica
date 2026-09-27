@@ -249,6 +249,26 @@ def check_verifactu():
     return "ok", f"huella según la AEAT · {count} registro(s), cadena íntegra"
 
 
+def check_backups():
+    """When the last copy of the books was made, and whether it goes off the machine."""
+    from datetime import datetime
+
+    from src import backup
+    from src.config_loader import get_config
+
+    last = backup.last_backup()
+    if last is None:
+        return "warn", ("Todavía no hay ninguna copia de seguridad. Se hace sola cada día "
+                        "con el bot en marcha (o ahora: py -m src.backup).")
+    age = datetime.now() - last
+    offsite = get_config().backup_copy_to or backup.email_address()
+    where = "" if offsite else " — solo en este ordenador: pon backup.copy_to o email"
+    if age.days >= 3:
+        return "warn", f"La última copia es de hace {age.days} días{where}."
+    return ("ok" if offsite else "warn"), (
+        f"última copia {last.strftime('%d/%m/%Y %H:%M')}{where}")
+
+
 def check_web():
     """Arranca la web en memoria y comprueba que el acceso está protegido."""
     os.environ.pop("WEB_DEV_NO_AUTH", None)
@@ -361,6 +381,7 @@ def main() -> int:
     run("Lectura de tickets", check_receipt_reading)
     run("Generación del PDF", check_pdf)
     run("Verifactu (huella y registro)", check_verifactu)
+    run("Copias de seguridad", check_backups)
     run("Web y control de acceso", check_web)
 
     section("4. Servicios externos" + (" (saltados)" if quick else ""))
