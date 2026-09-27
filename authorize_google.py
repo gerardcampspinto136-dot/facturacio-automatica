@@ -21,7 +21,7 @@ def main() -> None:
     print("app. Choose 'Advanced' (Configuración avanzada), then 'Go to gestoria (unsafe)'.")
     print()
 
-    creds = get_credentials()
+    creds = get_credentials(interactive=True)
 
     print("Authorised. Token saved to config/credentials/google_token.json")
     print("Scopes granted:")

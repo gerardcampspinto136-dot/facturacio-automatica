@@ -300,13 +300,38 @@ def check_groq():
     return "ok", f"voz, texto y visión disponibles, con sus reservas ({len(wanted)} modelos)"
 
 
+def check_email():
+    """Logs in to the mail server (or refreshes the Gmail token) without sending."""
+    from src.email_sender import check_connection
+
+    ok, detail = check_connection()
+    return ("ok" if ok else "fail"), detail
+
+
 def check_google():
-    token_path = os.getenv("GOOGLE_TOKEN_PATH", "config/credentials/google_token.json")
-    if not Path(token_path).exists():
-        return "warn", ("Sin autorizar. Ejecuta `py authorize_google.py` para "
-                        "Sheets y Gmail.")
-    from src.sheets import add_invoice_to_sheet  # noqa: F401  (import = credenciales ok)
-    return "ok", "credenciales presentes"
+    """Google Sheets: whether the stored authorisation still works, really.
+
+    It used to report OK whenever the token file existed -- while Google had already
+    revoked it and every Sheets entry (and, then, every email) was failing.
+    """
+    sheet_id = os.getenv("SPREADSHEET_ID", "")
+    if not sheet_id or sheet_id.startswith("your_"):
+        return "skip", "sin hoja de cálculo configurada (opcional)"
+    from google.auth.transport.requests import Request
+
+    from src.google_auth import load_credentials
+
+    creds = load_credentials()
+    if creds is None:
+        return "warn", "Sin autorizar: ejecuta `py authorize_google.py`."
+    try:
+        if not creds.valid:
+            creds.refresh(Request())
+    except Exception:
+        return "warn", ("La autorización de Google ha caducado: las facturas no se "
+                        "apuntan en Google Sheets. Ejecuta `py authorize_google.py`, y "
+                        "publica la app en Google Cloud para que no caduque cada 7 días.")
+    return "ok", "Google Sheets autorizado"
 
 
 # ── Ejecución ────────────────────────────────────────────────────────────────
@@ -340,12 +365,13 @@ def main() -> int:
 
     section("4. Servicios externos" + (" (saltados)" if quick else ""))
     if quick:
-        for name in ("Telegram", "Groq", "Google"):
+        for name in ("Telegram", "Groq", "Correo", "Google Sheets"):
             print(f"{SKIP} {name}")
     else:
         run("Bot de Telegram", check_telegram)
         run("Groq (voz y visión)", check_groq)
-        run("Google (Sheets y Gmail)", check_google)
+        run("Correo (envío de facturas)", check_email)
+        run("Google Sheets", check_google)
 
     failures = [r for r in _results if r[0] == "fail"]
     warnings = [r for r in _results if r[0] == "warn"]
