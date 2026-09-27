@@ -47,13 +47,11 @@ def _money(value: float) -> str:
 
 
 def _qr_block(invoice: InvoiceData, config):
-    """The Verifactu QR for an issued invoice, or None (drafts, or the module absent)."""
+    """The Verifactu QR for an issued invoice, or None (a draft has no number to check)."""
     if not invoice.invoice_number:
         return None
-    try:
-        from src import verifactu
-    except ImportError:  # pragma: no cover - module added separately
-        return None
+    from src import verifactu
+
     return verifactu.qr_flowable(invoice, config)
 
 
@@ -114,7 +112,7 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
     # ── Header: logo + company info ──────────────────────────────────────────
     logo_cell: object
     if config.logo_path and os.path.exists(config.logo_path):
-        logo_cell = Image(config.logo_path, width=5 * cm, height=2.2 * cm, kind="proportional")
+        logo_cell = Image(config.logo_path, width=4.8 * cm, height=2.2 * cm, kind="proportional")
     else:
         logo_cell = Paragraph(
             f"<b>{_t(config.name)}</b>",
@@ -131,7 +129,14 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
                              _style("CompanyInfo", fontSize=9, alignment=TA_RIGHT,
                                     textColor=TEXT_MUTED))
 
-    header_tbl = Table([[logo_cell, company_cell]], colWidths=[9.5 * cm, 7.5 * cm])
+    # The Verifactu QR goes first, at the top of the first page: the AEAT's
+    # specification asks for it before any of the invoice's own content.
+    qr = _qr_block(invoice, config)
+    if qr is not None:
+        header_tbl = Table([[qr, logo_cell, company_cell]],
+                           colWidths=[4.6 * cm, 5.4 * cm, 7 * cm])
+    else:
+        header_tbl = Table([[logo_cell, company_cell]], colWidths=[9.5 * cm, 7.5 * cm])
     header_tbl.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
@@ -271,12 +276,6 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
         elements.append(Spacer(1, 0.6 * cm))
         elements.append(Paragraph(f"<b>Notas:</b> {_t(invoice.notes)}",
                                   _style("Notes", fontSize=9, textColor=TEXT_MUTED)))
-
-    # ── Verifactu QR ─────────────────────────────────────────────────────────
-    qr = _qr_block(invoice, config)
-    if qr is not None:
-        elements.append(Spacer(1, 0.6 * cm))
-        elements.append(qr)
 
     # ── Bank account ─────────────────────────────────────────────────────────
     if config.bank_account and not invoice.rectifies:

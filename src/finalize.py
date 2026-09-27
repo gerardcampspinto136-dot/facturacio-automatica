@@ -112,11 +112,9 @@ def record(invoice: InvoiceData, token: Optional[str] = None,
 
 
 def _register(conn, number: str) -> None:
-    """Hook for the Verifactu record, written in the same transaction as the invoice."""
-    try:
-        from src import verifactu
-    except ImportError:  # pragma: no cover - module added separately
-        return
+    """The Verifactu record, written in the same transaction as the invoice itself."""
+    from src import verifactu
+
     verifactu.register_issued(conn, number)
 
 

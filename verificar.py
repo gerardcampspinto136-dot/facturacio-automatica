@@ -233,6 +233,22 @@ def check_pdf():
     return "ok", f"generado, {size // 1024} KB"
 
 
+def check_verifactu():
+    """La huella, contra el ejemplo oficial de la AEAT, y la cadena de registros real."""
+    from src import verifactu
+
+    official = verifactu.hash_alta(
+        "89890001K", "12345678/G33", "01-01-2024", "F1", "12.35", "123.45", "",
+        "2024-01-01T19:20:30+01:00")
+    assert official == ("3C464DAF61ACB827C65FDA19F352A4E3BDC2C640E9E9FC4CC058073F38F12F60"), \
+        "la huella no coincide con el ejemplo oficial de la AEAT"
+    intact, problems = verifactu.verify_chain()
+    if not intact:
+        return "fail", "Registro Verifactu alterado: " + "; ".join(problems[:3])
+    count = len(verifactu.list_records())
+    return "ok", f"huella según la AEAT · {count} registro(s), cadena íntegra"
+
+
 def check_web():
     """Arranca la web en memoria y comprueba que el acceso está protegido."""
     os.environ.pop("WEB_DEV_NO_AUTH", None)
@@ -314,6 +330,7 @@ def main() -> int:
     run("Gastos de proveedor", check_bills)
     run("Lectura de tickets", check_receipt_reading)
     run("Generación del PDF", check_pdf)
+    run("Verifactu (huella y registro)", check_verifactu)
     run("Web y control de acceso", check_web)
 
     section("4. Servicios externos" + (" (saltados)" if quick else ""))

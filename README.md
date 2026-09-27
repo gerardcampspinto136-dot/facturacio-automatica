@@ -37,6 +37,27 @@ Decided **per person**, by the permission *Aprobar y enviar facturas* (Equipo):
 
 A draft consumes **no number** until it is approved, so discarded drafts never leave gaps.
 
+## Verifactu
+
+Mandatory for this software's clients from **1 January 2027** (companies) and **1 July
+2027** (autónomos). What is in place:
+
+- **A chained register.** Every invoice issued gets a billing record with its SHA-256
+  fingerprint (*huella*), computed together with the previous record's — exactly as the
+  AEAT's technical specification describes, and tested against the AEAT's own worked
+  examples. The record is written in the same transaction as the invoice.
+- **Nothing can be rewritten.** Issued invoices and their records cannot be edited or
+  deleted (database triggers); a mistake is corrected with `/anular` (a rectifying
+  invoice, registered as `R1`).
+- **The QR code** at the top of every invoice, 35 mm, headed *QR tributario:*.
+- **A check**: the panel's *Verifactu* page and `verificar.py` recompute every
+  fingerprint and link, and say whether anything was altered.
+
+**Not yet built: sending the records to the AEAT** (the *VERI\*FACTU* mode). It needs
+each client's digital certificate to test with. Until then the system is *no
+VERI\*FACTU*: the QR points at `ValidarQRNoVerifactu`, and the "VERI\*FACTU" legend —
+which asserts the record reached the AEAT — is not printed.
+
 ### Contra / rectifying invoices (facturas rectificativas)
 
 To cancel an already-sent invoice, send `/anular <número>` in Telegram (or use the **Anular** button

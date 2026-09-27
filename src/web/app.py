@@ -453,6 +453,9 @@ _NAV = (
     ("Gastos", (
         ("bills.view", "/bills", "↑", "Proveedores"),
     )),
+    ("Hacienda", (
+        ("invoices.view", "/verifactu", "▣", "Verifactu"),
+    )),
     ("Administración", (
         ("users.manage", "/team", "◍", "Equipo"),
         ("companies.manage", "/admin", "⌂", "Empresas"),
@@ -1010,6 +1013,64 @@ async def issued_resend(request: Request, number: str):
                      "<div class='actions'><a class='btn btn-neutral' href='/issued'>"
                      "Volver</a></div></div>", user)
     return RedirectResponse("/issued", status_code=303)
+
+
+# ── Verifactu ────────────────────────────────────────────────────────────────
+
+@app.get("/verifactu", response_class=HTMLResponse)
+async def verifactu_page(request: Request):
+    """The register Hacienda will ask about: every record, and whether the chain holds."""
+    from src import verifactu
+
+    user, refusal = _guard(request, "invoices.view")
+    if refusal:
+        return refusal
+
+    intact, problems = await asyncio.to_thread(verifactu.verify_chain)
+    records = verifactu.list_records(200)
+
+    if not records:
+        status = ("<div class='notice'><b>Todavía no hay registros.</b>Cada factura que "
+                  "se emita a partir de ahora queda registrada aquí, encadenada con la "
+                  "anterior.</div>")
+    elif intact:
+        status = ("<div class='notice notice-ok'><b>✅ Registro íntegro.</b>"
+                  f"Las {len(records)} huellas se han recalculado ahora mismo y cada una "
+                  "corresponde a su factura y enlaza con la anterior: no se ha modificado "
+                  "ni borrado nada.</div>")
+    else:
+        items = "".join(f"<li>{html.escape(p)}</li>" for p in problems[:20])
+        status = ("<div class='notice notice-danger'><b>⚠️ El registro NO está íntegro."
+                  "</b><ul style='margin:6px 0 0 18px;padding:0'>" + items + "</ul></div>")
+
+    mode = ("<div class='card'><div class='card-title'>Estado</div>"
+            "<p>Cada factura se registra al emitirse con su huella SHA-256 encadenada, "
+            "calculada según la especificación técnica de la AEAT, y lleva el código QR "
+            "tributario arriba del todo. Las facturas y sus registros no se pueden "
+            "modificar ni borrar.</p>"
+            "<p class='muted'>Pendiente: el envío automático de los registros a la AEAT "
+            "(modalidad VERI*FACTU), que necesita el certificado digital de la empresa. "
+            "Obligatorio desde el 1-1-2027 para sociedades y el 1-7-2027 para "
+            "autónomos.</p></div>")
+
+    rows = "".join(
+        f"<tr><td class='strong'>{html.escape(r['invoice_number'])}</td>"
+        f"<td>{html.escape(r['invoice_type'] or r['kind'])}</td>"
+        f"<td class='muted'>{html.escape(r['issue_date'])}</td>"
+        f"<td class='num'>{html.escape(r['amount_total'] or '')}</td>"
+        f"<td class='muted' style='font-family:monospace;font-size:12px'>"
+        f"{html.escape(r['hash'][:16])}…</td>"
+        f"<td class='muted'>{html.escape(r['generated_at'])}</td></tr>"
+        for r in records
+    )
+    table = ("<div class='card'><div class='table-wrap'><table><thead><tr>"
+             "<th>Factura</th><th>Tipo</th><th>Fecha</th><th class='num'>Importe</th>"
+             "<th>Huella</th><th>Registrada</th></tr></thead>"
+             f"<tbody>{rows}</tbody></table></div></div>") if records else ""
+
+    return _page("Verifactu", status + mode + table, user,
+                 subtitle="El registro de facturación que exige Hacienda",
+                 current="/verifactu")
 
 
 # ── Supplier bills ───────────────────────────────────────────────────────────

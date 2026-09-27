@@ -188,6 +188,45 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- The Verifactu register (see src/verifactu.py): one record per invoice issued, each
+-- fingerprinted together with the one before it. The values are stored exactly as they
+-- were hashed -- as text -- so the chain can be re-verified at any time.
+CREATE TABLE IF NOT EXISTS verifactu_records (
+    id              INTEGER PRIMARY KEY,
+    kind            TEXT NOT NULL CHECK (kind IN ('alta', 'anulacion')),
+    invoice_number  TEXT NOT NULL,
+    issuer_nif      TEXT NOT NULL,
+    issue_date      TEXT NOT NULL,
+    invoice_type    TEXT,
+    tax_total       TEXT,
+    amount_total    TEXT,
+    previous_hash   TEXT NOT NULL DEFAULT '',
+    generated_at    TEXT NOT NULL,
+    hash            TEXT NOT NULL UNIQUE,
+    -- For sending the record to the AEAT, once that is built.
+    sent_status     TEXT NOT NULL DEFAULT 'not_sent',
+    sent_at         TEXT,
+    aeat_response   TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_verifactu_number ON verifactu_records (invoice_number);
+
+-- A record, once written, is part of a chain that proves nothing was rewritten: it can
+-- be marked as sent to the AEAT, and nothing else.
+CREATE TRIGGER IF NOT EXISTS trg_verifactu_frozen
+BEFORE UPDATE OF kind, invoice_number, issuer_nif, issue_date, invoice_type, tax_total,
+                 amount_total, previous_hash, generated_at, hash
+ON verifactu_records
+BEGIN
+    SELECT RAISE(ABORT, 'Un registro Verifactu no se puede modificar.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_verifactu_kept
+BEFORE DELETE ON verifactu_records
+BEGIN
+    SELECT RAISE(ABORT, 'Un registro Verifactu no se puede borrar.');
+END;
 """
 
 

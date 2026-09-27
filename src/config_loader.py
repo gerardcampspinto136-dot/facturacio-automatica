@@ -112,6 +112,13 @@ class CompanyConfig:
         # The hour of the morning the reminders go out (never after 21:00).
         self.alert_hour = min(max(int(alerts.get("hour", 9) or 9), 0), 20)
 
+        # ── Verifactu ────────────────────────────────────────────────────────
+        verifactu = data.get("verifactu", {}) or {}
+        # The QR the AEAT requires at the top of every invoice.
+        self.verifactu_qr = bool(verifactu.get("qr", True))
+        # "test" / "production"; blank decides from whether the company is configured.
+        self.verifactu_environment = str(verifactu.get("environment", "") or "")
+
         web = review.get("web", {}) or {}
         self.web_base_url = str(web.get("base_url", "http://localhost:8000")).rstrip("/")
         self.web_host = web.get("host", "127.0.0.1")
