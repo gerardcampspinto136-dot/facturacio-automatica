@@ -108,6 +108,14 @@ collections:
   body_template: ""
 
 # ============================================================
+#  PRESUPUESTOS
+#  «Presupuesto para…» en vez de «factura para…». Cuando el cliente
+#  acepta, un toque lo convierte en la factura.
+# ============================================================
+quotes:
+  validity_days: 30        # cuántos días es válido un presupuesto
+
+# ============================================================
 #  EL GESTOR
 #  Cada trimestre el bot calcula el IVA (303) y el IRPF (130) y prepara un
 #  paquete con los libros de facturas, los PDF y los tickets. Con el email

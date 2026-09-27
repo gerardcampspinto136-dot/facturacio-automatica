@@ -217,6 +217,41 @@ CREATE TABLE IF NOT EXISTS recurring_invoices (
 );
 CREATE INDEX IF NOT EXISTS idx_recurring_due ON recurring_invoices (active, next_date);
 
+-- Quotes (presupuestos). Not invoices: no fiscal value, no Verifactu record, and they
+-- can be accepted, rejected or left to expire. An accepted one becomes an invoice,
+-- and remembers which.
+CREATE TABLE IF NOT EXISTS quotes (
+    id             INTEGER PRIMARY KEY,
+    number         TEXT NOT NULL UNIQUE,
+    status         TEXT NOT NULL DEFAULT 'sent'
+                   CHECK (status IN ('sent', 'accepted', 'rejected', 'invoiced')),
+    contact_id     INTEGER REFERENCES contacts (id) ON DELETE SET NULL,
+    client_name    TEXT NOT NULL DEFAULT '',
+    client_email   TEXT,
+    client_address TEXT,
+    client_id      TEXT,
+    date           TEXT NOT NULL,
+    valid_until    TEXT NOT NULL,
+    notes          TEXT,
+    tax_rate       REAL,
+    irpf_rate      REAL,
+    invoice_number TEXT,
+    email_sent_at  TEXT,
+    email_error    TEXT,
+    created_by     INTEGER,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS quote_items (
+    id          INTEGER PRIMARY KEY,
+    quote_id    INTEGER NOT NULL REFERENCES quotes (id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL DEFAULT 0,
+    description TEXT NOT NULL,
+    quantity    REAL NOT NULL DEFAULT 1,
+    unit_price  REAL NOT NULL DEFAULT 0,
+    total       REAL NOT NULL DEFAULT 0
+);
+
 -- The Verifactu register (see src/verifactu.py): one record per invoice issued, each
 -- fingerprinted together with the one before it. The values are stored exactly as they
 -- were hashed -- as text -- so the chain can be re-verified at any time.
@@ -299,6 +334,8 @@ _ADDED_COLUMNS = {
         ("last_reminder_at", "TEXT"),
         ("reminder_prompted_at", "TEXT"),
         ("reminders_paused", "INTEGER NOT NULL DEFAULT 0"),
+        # The quote this invoice came from, if any.
+        ("quote_number", "TEXT"),
     ],
     # Everything the admin panel needs to set up a client without editing YAML. Added
     # here rather than in CREATE TABLE so an installation that already has companies

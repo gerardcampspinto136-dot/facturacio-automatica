@@ -37,10 +37,14 @@ _WELCOME = (
     "Cuando esté completa te la enseño y tú decides si se envía.\n\n"
     "Para un *gasto*, mándame directamente una *foto* del ticket o de la factura "
     "del proveedor: la leo y la anoto yo.\n\n"
+    "Para un *presupuesto*, igual que una factura pero empezando por "
+    "_«presupuesto para…»_. Cuando el cliente acepte, un toque lo convierte en la "
+    "factura.\n\n"
     "Comandos:\n"
     "• /ayuda — cómo hablarme y ejemplos\n"
     "• /pendientes — facturas esperando aprobación\n"
     "• /factura <número> — el PDF de una factura emitida\n"
+    "• /presupuestos — los que esperan respuesta · /recurrentes — las que se repiten\n"
     "• /clientes — clientes que ya tengo guardados\n"
     "• /cancelar — descartar la factura en curso\n"
     "• /anular <número> — emitir una rectificativa\n"
@@ -1011,8 +1015,97 @@ async def _begin_invoice(update, status_msg, text: str, user: dict) -> None:
     await _send(update.message, replies)
 
 
+async def _issue_quote(update, session, user: dict) -> None:
+    """Send the confirmed quote to the client, with the buttons for what happens next."""
+    from src import quotes
+
+    message = _target(update)
+    invoice = session.invoice
+    config = get_config()
+    status = await message.reply_text("Preparando y enviando el presupuesto...")
+    try:
+        if session.contact_is_new():
+            session.save_contact()
+        session.remember_terms()
+        result = await asyncio.to_thread(quotes.issue, invoice, user.get("id"))
+        _, _, total = compute_totals(invoice, config)
+        with open(result.pdf_path, "rb") as pdf_file:
+            await message.reply_document(
+                document=pdf_file, filename=f"Presupuesto_{result.number}.pdf",
+                caption=(f"📋 Presupuesto {result.number}\n"
+                         f"Cliente: {invoice.client_name}\n"
+                         f"Total: {format_money(total, config)}\n"
+                         f"Válido hasta el {result.valid_until.strftime('%d/%m/%Y')}\n"
+                         f"{result.email_status}\n\n"
+                         "Cuando te conteste, dímelo con un botón:"),
+                reply_markup=_keyboard(_quote_buttons(result.number)))
+        await status.delete()
+    except Exception as exc:
+        logger.error("Could not send the quote", exc_info=True)
+        await status.edit_text(f"Error al enviar el presupuesto:\n{exc}")
+    finally:
+        conversation.clear(update.effective_chat.id)
+
+
+def _quote_buttons(number: str) -> list:
+    return [[("✅ Aceptado → facturar", f"quo:inv:{number}"),
+             ("❌ Rechazado", f"quo:rej:{number}")]]
+
+
+async def cmd_presupuestos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Quotes still waiting for an answer, each with its buttons."""
+    from src import quotes
+
+    if await _gate(update, "invoices.view") is None:
+        return
+    open_quotes = quotes.list_quotes(open_only=True, limit=10)
+    if not open_quotes:
+        await update.message.reply_text(
+            "No tienes presupuestos pendientes. Para hacer uno, dímelo como una factura "
+            "pero empezando por «presupuesto para…».")
+        return
+    config = get_config()
+    for quote in open_quotes:
+        inv = quote["invoice"]
+        await update.message.reply_text(
+            f"📋 {quote['number']} — {inv.client_name}: "
+            f"{format_money(compute_totals(inv, config)[2], config)} "
+            f"({quotes.status_label(quote)}, válido hasta "
+            f"{quote['valid_until'].strftime('%d/%m/%Y')})",
+            reply_markup=_keyboard(_quote_buttons(quote["number"])))
+
+
+async def _on_quote_button(update: Update, action: str, number: str) -> None:
+    from src import quotes
+
+    query = update.callback_query
+    user = await _gate(update, "invoices.create")
+    if user is None:
+        return
+    await query.edit_message_reply_markup(reply_markup=None)
+    if action == "rej":
+        quotes.reject(number)
+        await query.message.reply_text(f"❌ Presupuesto {number} marcado como rechazado.")
+        return
+    if action == "inv":
+        try:
+            invoice = quotes.to_invoice(number)
+        except (KeyError, ValueError) as exc:
+            await query.message.reply_text(f"⚠️ {exc}")
+            return
+        # The normal review from here: anything the quote did not need (the client's
+        # tax id, say) is asked for now, and the approval rules apply as usual.
+        session = conversation.session_for(update.effective_chat.id)
+        replies = session.start(invoice, can_send=accounts.can(user, "invoices.approve"))
+        await query.message.reply_text(f"✅ ¡Aceptado! Preparo la factura del {number}.")
+        await _send(query.message, replies)
+
+
 async def _approve(update, session, user: dict) -> None:
     """The user confirmed the invoice: issue it, or queue it if it is not theirs to send."""
+    if session.invoice is not None and session.invoice.document == "quote":
+        await _issue_quote(update, session, user)
+        return
     if not accounts.can(user, "invoices.approve"):
         await _queue(update, session, user, ask_for_approval=True)
         return
@@ -1233,6 +1326,11 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _on_pending_button(update, action, token)
         return
 
+    if data.startswith("quo:"):
+        _, action, number = (data.split(":", 2) + ["", ""])[:3]
+        await _on_quote_button(update, action, number)
+        return
+
     if data.startswith("rec:"):
         _, action, ref = (data.split(":", 2) + ["", ""])[:3]
         await _on_recurring_button(update, action, ref)
@@ -1393,6 +1491,7 @@ _MENU = [
     ("ayuda", "Cómo hablarme y ejemplos"),
     ("pendientes", "Facturas esperando aprobación"),
     ("factura", "El PDF de una factura emitida"),
+    ("presupuestos", "Presupuestos esperando respuesta"),
     ("recurrentes", "Facturas que se repiten cada mes"),
     ("cobrada", "Marcar una factura como cobrada"),
     ("trimestre", "IVA e IRPF del trimestre, y el paquete para el gestor"),
@@ -1436,6 +1535,7 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("cobradas", cmd_cobrada))
     app.add_handler(CommandHandler("recordar", cmd_recordar))
     app.add_handler(CommandHandler("recurrentes", cmd_recurrentes))
+    app.add_handler(CommandHandler("presupuestos", cmd_presupuestos))
     app.add_handler(CommandHandler("impuestos", cmd_trimestre))
     app.add_handler(CommandHandler("anular", cmd_anular))
     app.add_handler(CommandHandler("gasto", cmd_gasto))

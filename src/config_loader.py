@@ -125,6 +125,10 @@ class CompanyConfig:
             "subject_template", "Recordatorio de pago — factura {invoice_number}")
         self.collections_body = collections.get("body_template", "") or ""
 
+        # ── Quotes ───────────────────────────────────────────────────────────
+        self.quote_validity_days = int((data.get("quotes", {}) or {}).get(
+            "validity_days", 30) or 30)
+
         # ── The gestor ───────────────────────────────────────────────────────
         # Who receives the quarter's pack (invoice books, PDFs, receipts).
         self.gestor_email = str((data.get("gestor", {}) or {}).get("email", "") or "")

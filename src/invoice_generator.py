@@ -47,16 +47,20 @@ def _money(value: float) -> str:
 
 
 def _qr_block(invoice: InvoiceData, config):
-    """The Verifactu QR for an issued invoice, or None (a draft has no number to check)."""
-    if not invoice.invoice_number:
+    """The Verifactu QR for an issued invoice, or None (a draft has no number to check,
+    and a quote is not an invoice)."""
+    if not invoice.invoice_number or invoice.document == "quote":
         return None
     from src import verifactu
 
     return verifactu.qr_flowable(invoice, config)
 
 
-def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
+def generate_invoice_pdf(invoice: InvoiceData, output_path: str,
+                         valid_until=None) -> str:
+    """Render an invoice -- or, when invoice.document is "quote", a quote -- to a PDF."""
     config = get_config()
+    is_quote = invoice.document == "quote"
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     doc = SimpleDocTemplate(
@@ -66,7 +70,8 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
         leftMargin=2 * cm,
         topMargin=2 * cm,
         bottomMargin=2 * cm,
-        title=f"Factura {invoice.invoice_number or 'borrador'}",
+        title=(f"Presupuesto {invoice.invoice_number}" if is_quote
+               else f"Factura {invoice.invoice_number or 'borrador'}"),
         author=config.name,
     )
 
@@ -96,7 +101,7 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
         )
         elements.append(Spacer(1, 0.5 * cm))
 
-    if not invoice.invoice_number:
+    if not invoice.invoice_number and not is_quote:
         # A draft waiting for approval: it has no number yet, and must not pass for
         # an invoice if it is forwarded.
         elements.append(
@@ -145,7 +150,8 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
     elements.append(HRFlowable(width="100%", thickness=2, color=BRAND_DARK, spaceAfter=10))
 
     # ── Invoice title + number ───────────────────────────────────────────────
-    title_text = "FACTURA RECTIFICATIVA" if invoice.rectifies else "FACTURA"
+    title_text = ("PRESUPUESTO" if is_quote else
+                  "FACTURA RECTIFICATIVA" if invoice.rectifies else "FACTURA")
     # A draft waiting for approval has no number yet -- it is assigned on approval so a
     # discarded draft leaves no gap -- and must not look like an issued invoice.
     number_text = (f"N.º {_t(invoice.invoice_number)}" if invoice.invoice_number
@@ -186,7 +192,10 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
         client_lines.append(_t(invoice.client_email))
 
     date_lines = [f"<b>Fecha:</b> {invoice.date.strftime('%d/%m/%Y')}"]
-    if not invoice.rectifies:
+    if is_quote:
+        if valid_until:
+            date_lines.append(f"<b>Válido hasta:</b> {valid_until.strftime('%d/%m/%Y')}")
+    elif not invoice.rectifies:
         due = invoice.due_date or (invoice.date + timedelta(days=config.payment_days))
         date_lines.append(f"<b>Vencimiento:</b> {due.strftime('%d/%m/%Y')}")
         date_lines.append(f"<b>Pago:</b> {_t(config.payment_terms)}")
@@ -278,7 +287,13 @@ def generate_invoice_pdf(invoice: InvoiceData, output_path: str) -> str:
                                   _style("Notes", fontSize=9, textColor=TEXT_MUTED)))
 
     # ── Bank account ─────────────────────────────────────────────────────────
-    if config.bank_account and not invoice.rectifies:
+    if is_quote:
+        elements.append(Spacer(1, 0.8 * cm))
+        elements.append(Paragraph(
+            "Este presupuesto no es una factura. Para aceptarlo, basta con responder "
+            "al correo con el que lo ha recibido.",
+            _style("QuoteNote", fontSize=8, textColor=TEXT_MUTED)))
+    elif config.bank_account and not invoice.rectifies:
         elements.append(Spacer(1, 0.8 * cm))
         elements.append(HRFlowable(width="100%", thickness=0.5, color=GREY_LINE))
         elements.append(Spacer(1, 0.3 * cm))

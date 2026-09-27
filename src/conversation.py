@@ -146,8 +146,10 @@ class Session:
         return [Reply("No sé qué hacer con eso ahora mismo.")]
 
     def cancel(self) -> list[Reply]:
+        what = ("Presupuesto descartado" if self.invoice is not None
+                and self.invoice.document == "quote" else "Factura descartada")
         self.reset()
-        return [Reply("Factura descartada. No se ha enviado nada.")]
+        return [Reply(f"{what}. No se ha enviado nada.")]
 
     # ── Client resolution ────────────────────────────────────────────────────
 
@@ -282,13 +284,17 @@ class Session:
         self.awaiting = AWAIT_CONFIRM
 
         inv = self.invoice
+        is_quote = inv.document == "quote"
         lines = [
-            "*Revisa la factura antes de enviarla*",
+            "*Revisa el presupuesto antes de enviarlo*" if is_quote
+            else "*Revisa la factura antes de enviarla*",
             "",
             f"Cliente: *{inv.client_name}*",
             f"NIF/CIF: {inv.client_id or '—'}",
             f"Email: {inv.client_email or '—'}",
         ]
+        if inv.quote_number:
+            lines.insert(1, f"_Del presupuesto {inv.quote_number}_")
         if inv.client_address:
             lines.append(f"Dirección: {inv.client_address}")
         lines.append("")
@@ -320,7 +326,17 @@ class Session:
         elif float(getattr(config, "irpf_rate", 0) or 0):
             irpf_button = [(f"➕ Retención {rate_label(config.irpf_rate)}%", "toggle_irpf")]
 
-        if self.can_send:
+        if is_quote:
+            # A quote has no fiscal weight: anyone who may prepare invoices may send one.
+            lines.append(f"\n¿Se lo envío a {inv.client_email}? Válido "
+                         f"{getattr(config, 'quote_validity_days', 30)} días.")
+            buttons = [
+                ("📤 Enviar presupuesto", "approve"),
+                ("🔄 Cambiar IVA", "toggle_tax"),
+                *irpf_button,
+                ("❌ Descartar", "cancel"),
+            ]
+        elif self.can_send:
             lines.append(f"\n¿La envío a {inv.client_email}?")
             buttons = [
                 ("✅ Enviar", "approve"),

@@ -50,7 +50,8 @@ JSON schema:
   "notes": "string or null",
   "prices_include_tax": "true | false | null",
   "irpf_rate": "number or null",
-  "tax_rate": "number or null"
+  "tax_rate": "number or null",
+  "document": "invoice | quote"
 }
 
 Rules:
@@ -88,6 +89,9 @@ Rules:
 - Naming a rate does not say the price includes it: "con IVA del 10%" and "amb IVA
   del deu per cent" set tax_rate and leave prices_include_tax null, unless the speaker
   ALSO says it is included ("IVA del 10% incluido" -> tax_rate 10, true).
+- document is "quote" when the speaker asks for a quote or estimate rather than an
+  invoice -- "presupuesto", "pressupost", "quote", "estimate", "hazme un presupuesto" --
+  and "invoice" otherwise.
 - "notes" is only for a genuine remark about the job. If there is none, use null.
   Never put the VAT, the withholding or how the price was quoted in "notes"."""
 
@@ -278,6 +282,8 @@ def parse_invoice_from_transcript(transcript: str) -> InvoiceData:
         date=date.today(),
         irpf_rate=_rate(data.get("irpf_rate"), maximum=50),
         tax_rate=_rate(data.get("tax_rate"), maximum=30),
+        document="quote" if str(data.get("document") or "").strip().lower() == "quote"
+        else "invoice",
     )
 
 

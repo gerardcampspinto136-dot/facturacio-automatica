@@ -102,6 +102,11 @@ def missing_fields(invoice: InvoiceData, config=None) -> list[str]:
     if config.require_email and not valid_email(invoice.client_email):
         missing.append("client_email")
 
+    # A quote is a price offered, not a tax document: the tax id and the address are
+    # asked for when it becomes the invoice, not before the client has even said yes.
+    if getattr(invoice, "document", "invoice") == "quote":
+        return missing
+
     if config.require_tax_id and not valid_tax_id(invoice.client_id):
         missing.append("client_id")
 

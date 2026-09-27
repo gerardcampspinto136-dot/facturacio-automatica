@@ -107,6 +107,10 @@ def record(invoice: InvoiceData, token: Optional[str] = None,
         store.write_issued(conn, invoice, number, token=token,
                            due_days=config.payment_days)
         _register(conn, number)
+        if invoice.quote_number:
+            # The quote it came from is now invoiced -- in the same breath.
+            conn.execute("UPDATE quotes SET status = 'invoiced', invoice_number = ? "
+                         "WHERE number = ?", (number, invoice.quote_number))
     invoice.invoice_number = number
     return number
 

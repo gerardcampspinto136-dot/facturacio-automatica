@@ -62,6 +62,10 @@ class InvoiceData:
     # When the client has to pay by. Set when the invoice is issued, from the payment
     # terms in force then, so a PDF rebuilt later still shows the same date.
     due_date: Optional[date] = None
+    # "invoice", or "quote" when what was dictated is a presupuesto.
+    document: str = "invoice"
+    # For an invoice made from an accepted quote: the quote's number.
+    quote_number: Optional[str] = None
     # Stock moved when this invoice was issued, so the bot can report it in the chat.
     # Filled in by finalize_invoice; not part of the invoice document itself.
     stock_movements: list = field(default_factory=list)

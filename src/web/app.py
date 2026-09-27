@@ -448,6 +448,7 @@ _NAV = (
         (None, "/", "◎", "Inicio"),
         ("invoices.view", "/pending", "◷", "Pendientes"),
         ("invoices.view", "/issued", "▤", "Emitidas"),
+        ("invoices.view", "/quotes", "✎", "Presupuestos"),
         ("invoices.view", "/recurring", "↻", "Recurrentes"),
         ("receivables.view", "/receivables", "↓", "Cobros"),
     )),
@@ -1038,6 +1039,109 @@ async def issued_resend(request: Request, number: str):
                      "<div class='actions'><a class='btn btn-neutral' href='/issued'>"
                      "Volver</a></div></div>", user)
     return RedirectResponse("/issued", status_code=303)
+
+
+# ── Quotes ───────────────────────────────────────────────────────────────────
+
+@app.get("/quotes", response_class=HTMLResponse)
+async def quotes_page(request: Request):
+    from src import quotes
+
+    user, refusal = _guard(request, "invoices.view")
+    if refusal:
+        return refusal
+    may_convert = accounts.can(user, "invoices.create")
+    listed = quotes.list_quotes(limit=200)
+
+    badge = {"enviado": "", "aceptado": "badge-ok", "facturado": "badge-ok",
+             "rechazado": "badge-muted", "caducado": "badge-warn"}
+    rows = []
+    for q in listed:
+        inv = q["invoice"]
+        state = quotes.status_label(q)
+        number = html.escape(q["number"])
+        actions = [f"<a class='btn btn-neutral btn-sm' href='/quotes/{number}/pdf' "
+                   f"target='_blank'>PDF</a>"]
+        if may_convert and q["status"] in ("sent", "accepted"):
+            actions.append(
+                f"<form method='post' action='/quotes/{number}/invoice'>"
+                f"<button class='btn-primary btn-sm'>Aceptado → facturar</button></form>")
+            actions.append(
+                f"<form method='post' action='/quotes/{number}/reject'>"
+                f"<button class='btn-neutral btn-sm'>Rechazado</button></form>")
+        invoiced = (f"<div class='muted'>factura {html.escape(q['invoice_number'])}</div>"
+                    if q["invoice_number"] else "")
+        rows.append(
+            f"<tr><td class='strong'>{number}</td>"
+            f"<td>{html.escape(inv.client_name)}{invoiced}</td>"
+            f"<td class='muted'>{inv.date.strftime('%d/%m/%Y')}</td>"
+            f"<td class='muted'>{q['valid_until'].strftime('%d/%m/%Y')}</td>"
+            f"<td><span class='badge {badge.get(state, '')}'>{state}</span></td>"
+            f"<td class='num total'>{_money(_totals(inv)[2])}</td>"
+            f"<td><div class='actions'>{''.join(actions)}</div></td></tr>")
+
+    open_total = sum(_totals(q["invoice"])[2] for q in listed
+                     if q["status"] in ("sent", "accepted") and not q["expired"])
+    tiles = (f"<div class='stats'>"
+             f"{_stat('Presupuestos abiertos', _money(open_total), 'esperando respuesta')}"
+             f"</div>")
+    table = ("<div class='card'><div class='table-wrap'><table><thead><tr>"
+             "<th>Número</th><th>Cliente</th><th>Fecha</th><th>Válido hasta</th>"
+             "<th>Estado</th><th class='num'>Total</th><th></th></tr></thead>"
+             f"<tbody>{''.join(rows)}</tbody></table></div></div>"
+             if rows else _empty("Todavía no hay presupuestos",
+                                 "Díctale al bot «presupuesto para…» como si fuera una "
+                                 "factura."))
+    return _page("Presupuestos", tiles + table, user,
+                 subtitle="Cuando el cliente acepta, se convierte en la factura",
+                 current="/quotes")
+
+
+@app.get("/quotes/{number}/pdf")
+async def quote_pdf(request: Request, number: str):
+    from src import quotes
+
+    user, refusal = _guard(request, "invoices.view")
+    if refusal:
+        return refusal
+    path = await asyncio.to_thread(quotes.pdf_for, number)
+    if path is None:
+        return _page("No encontrado", "<div class='card'>Ese presupuesto no existe.</div>",
+                     user)
+    return FileResponse(path, media_type="application/pdf",
+                        filename=f"Presupuesto_{number}.pdf")
+
+
+@app.post("/quotes/{number}/invoice")
+async def quote_to_invoice(request: Request, number: str):
+    """Accepted: the quote becomes a draft invoice, to review and approve as usual."""
+    from src import quotes
+
+    user, refusal = _guard(request, "invoices.create")
+    if refusal:
+        return refusal
+    try:
+        invoice = quotes.to_invoice(number)
+    except (KeyError, ValueError) as exc:
+        return _page("No se pudo facturar",
+                     f"<div class='card'>{html.escape(str(exc))}</div>", user)
+    token = store.new_token()
+    draft = finalize.draft_path(token)
+    await asyncio.to_thread(generate_invoice_pdf, invoice, draft)
+    store.add_pending(invoice, draft, token=token, created_by=user.get("id"),
+                      created_by_name=_person(user))
+    return RedirectResponse(f"/invoice/{token}", status_code=303)
+
+
+@app.post("/quotes/{number}/reject")
+async def quote_reject(request: Request, number: str):
+    from src import quotes
+
+    _user_, refusal = _guard(request, "invoices.create")
+    if refusal:
+        return refusal
+    quotes.reject(number)
+    return RedirectResponse("/quotes", status_code=303)
 
 
 # ── Recurring invoices ───────────────────────────────────────────────────────

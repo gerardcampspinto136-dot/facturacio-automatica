@@ -117,6 +117,7 @@ def _row_to_invoice(conn, row) -> InvoiceData:
         tax_rate=row["tax_rate"],
         irpf_rate=row["irpf_rate"],
         due_date=date.fromisoformat(row["due_date"]) if row["due_date"] else None,
+        quote_number=row["quote_number"],
     )
 
 
@@ -182,8 +183,8 @@ def add_pending(invoice: InvoiceData, draft_path: str, *, token: Optional[str] =
             "(status, token, client_name, client_email, client_address, client_id, "
             " date, notes, rectifies, prices_include_tax, contact_id, tax_rate, "
             " irpf_rate, draft_path, created_by, created_by_name, created_chat_id, "
-            " created_at) "
-            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " created_at, quote_number) "
+            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 token,
                 invoice.client_name,
@@ -202,6 +203,7 @@ def add_pending(invoice: InvoiceData, draft_path: str, *, token: Optional[str] =
                 created_by_name,
                 created_chat_id,
                 datetime.now().isoformat(timespec="seconds"),
+                invoice.quote_number,
             ),
         )
         _write_items(conn, cur.lastrowid, invoice)
@@ -327,6 +329,7 @@ def write_issued(conn, invoice: InvoiceData, number: str, *, token: Optional[str
         invoice.contact_id,
         invoice.tax_rate,
         invoice.irpf_rate,
+        invoice.quote_number,
     )
 
     if token:
@@ -339,16 +342,17 @@ def write_issued(conn, invoice: InvoiceData, number: str, *, token: Optional[str
         conn.execute(
             "UPDATE invoices SET client_name = ?, client_email = ?, client_address = ?, "
             "client_id = ?, date = ?, notes = ?, rectifies = ?, prices_include_tax = ?, "
-            "contact_id = COALESCE(?, contact_id), tax_rate = ?, irpf_rate = ? "
-            "WHERE id = ?",
+            "contact_id = COALESCE(?, contact_id), tax_rate = ?, irpf_rate = ?, "
+            "quote_number = COALESCE(?, quote_number) WHERE id = ?",
             (*fields, invoice_id),
         )
     else:
         cur = conn.execute(
             "INSERT INTO invoices "
             "(status, client_name, client_email, client_address, client_id, date, notes, "
-            " rectifies, prices_include_tax, contact_id, tax_rate, irpf_rate) "
-            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " rectifies, prices_include_tax, contact_id, tax_rate, irpf_rate, "
+            " quote_number) "
+            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             fields,
         )
         invoice_id = cur.lastrowid
