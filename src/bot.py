@@ -35,8 +35,8 @@ _WELCOME = (
     "_«Factura para Talleres Puig, 300 euros más IVA por la reparación»_\n\n"
     "Si me falta algo obligatorio (email, NIF...) te lo pido antes de emitir nada. "
     "Cuando esté completa te la enseño y tú decides si se envía.\n\n"
-    "Para un *gasto*, mándame directamente una *foto* del ticket o de la factura "
-    "del proveedor: la leo y la anoto yo.\n\n"
+    "Para un *gasto*, mándame directamente una *foto* del ticket o el *PDF* de la "
+    "factura del proveedor: la leo y la anoto yo.\n\n"
     "Para un *presupuesto*, igual que una factura pero empezando por "
     "_«presupuesto para…»_. Cuando el cliente acepte, un toque lo convierte en la "
     "factura.\n\n"
@@ -1575,7 +1575,8 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("clientes", cmd_clientes))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
+    app.add_handler(MessageHandler(
+        filters.PHOTO | filters.Document.IMAGE | filters.Document.PDF, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)
 

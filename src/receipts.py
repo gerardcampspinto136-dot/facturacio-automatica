@@ -93,6 +93,10 @@ Rules:
 - The supplier is whoever ISSUED the document, not the customer named on it. On a till
   receipt it is the shop at the top.
 - A cash or card ticket is already paid. An invoice with a due date is not.
+- A direct debit ("domiciliación", "se cargará en su cuenta el ...") is paid by the
+  bank on that date: that date is the due_date and payment_method is "domiciliado".
+- Electricity, gas, water, phone and internet bills are "suministros"; software and
+  online subscriptions are "software"; restaurants and meals are "dietas".
 - NEVER invent a figure. Anything you cannot read with confidence is null, and lower
   "confidence" accordingly. A missing number is fine; a wrong one is not.
 - Never translate names: they stay exactly as printed."""
@@ -538,13 +542,114 @@ def build_receipt(data: dict) -> ReceiptData:
 
 
 def extract_receipt(image_path: str, hint: Optional[str] = None) -> ReceiptData:
-    """Read one photographed document. `hint` is the user's caption, if any."""
+    """Read one photographed document -- or a PDF. `hint` is the user's caption, if any."""
+    if Path(image_path).suffix.lower() == ".pdf":
+        return extract_from_pdf(image_path, hint)
     b64, mime = _encode(image_path)
     provider = _which_provider()
     raw = (_complete_groq(b64, mime, hint) if provider == "groq"
            else _complete_anthropic(b64, mime, hint))
     receipt = build_receipt(_extract_json(raw, provider))
     receipt.image_path = image_path
+    return receipt
+
+
+# ── Invoices that arrive as PDF ──────────────────────────────────────────────
+#
+# The electricity, the phone, the software subscription, the online shop: most
+# supplier invoices now arrive as a PDF, not on paper. A PDF made by a computer carries
+# its text, which the text model reads more cheaply and more reliably than any photo;
+# a scanned one is a picture inside a PDF, which goes to the vision model like a photo.
+# pypdf (BSD) rather than PyMuPDF, whose AGPL licence would bind the product sold.
+
+MIN_TEXT = 80  # characters of real text below which a PDF is treated as a scan
+
+
+def _pdf_text(path: str, pages: int = 3) -> str:
+    from pypdf import PdfReader
+
+    reader = PdfReader(path)
+    return "\n".join((page.extract_text() or "") for page in reader.pages[:pages]).strip()
+
+
+def _pdf_image(path: str) -> Optional[tuple[bytes, str]]:
+    """The largest picture on the first page of a scanned PDF, as (bytes, mime)."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(path)
+    if not reader.pages:
+        return None
+    best = None
+    for image in reader.pages[0].images:
+        if best is None or len(image.data) > len(best.data):
+            best = image
+    if best is None:
+        return None
+    mime = _MIME.get(Path(best.name).suffix.lower(), "image/png")
+    return best.data, mime
+
+
+def _complete_text(text: str, hint: Optional[str]) -> str:
+    """Read the extracted text of a digital invoice with the text model."""
+    from src.parser import ANTHROPIC_MODEL, GROQ_FALLBACK_MODEL, GROQ_MODEL, with_retries
+
+    prompt = (_SYSTEM_PROMPT.replace("photographs of supplier invoices",
+                                     "the extracted text of supplier invoices")
+              + "\n\n" + _user_prompt(hint).replace("de la imagen", "del texto")
+              + "\n\nTEXTO DEL DOCUMENTO:\n" + text[:12000])
+    provider = _which_provider()
+    if provider == "anthropic":
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL, max_tokens=1200, temperature=0,
+            messages=[{"role": "user", "content": prompt},
+                      {"role": "assistant", "content": "{"}])
+        return "{" + response.content[0].text
+
+    import groq
+
+    client = groq.Groq(api_key=os.environ["GROQ_API_KEY"])
+
+    def call(model: str) -> str:
+        response = client.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}, temperature=0, max_tokens=1200)
+        return response.choices[0].message.content or ""
+
+    return with_retries(call, (GROQ_MODEL, GROQ_FALLBACK_MODEL), "leer el PDF")
+
+
+def extract_from_pdf(path: str, hint: Optional[str] = None) -> ReceiptData:
+    """Read a supplier invoice sent as a PDF: its text if it has one, else its scan."""
+    from src.parser import ParseError
+
+    try:
+        text = _pdf_text(path)
+    except Exception as exc:
+        raise ReceiptError("No he podido abrir ese PDF. ¿Está protegido con contraseña? "
+                           "Mándamelo sin protección, o una foto.") from exc
+
+    try:
+        if len(text) >= MIN_TEXT:
+            raw = _complete_text(text, hint)
+            provider = _which_provider()
+        else:
+            picture = _pdf_image(path)
+            if picture is None:
+                raise ReceiptError("Ese PDF no tiene ni texto ni imagen que pueda leer. "
+                                   "Mándame una foto del documento.")
+            data, mime = picture
+            b64 = base64.b64encode(data).decode()
+            provider = _which_provider()
+            raw = (_complete_groq(b64, mime, hint) if provider == "groq"
+                   else _complete_anthropic(b64, mime, hint))
+    except ParseError as exc:
+        raise ReceiptError(str(exc)) from exc
+
+    receipt = build_receipt(_extract_json(raw, provider))
+    receipt.image_path = path
     return receipt
 
 
