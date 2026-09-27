@@ -39,6 +39,13 @@ class Reply:
     markdown: bool = True
 
 
+def _real_tax_id(value) -> Optional[str]:
+    """A tax id worth storing on the client: not "SIN NIF", which marks its absence --
+    stored, the second client without one clashed with the first (tax ids are unique)."""
+    cleaned = (value or "").strip()
+    return None if not cleaned or cleaned.upper() == "SIN NIF" else cleaned
+
+
 def md(value) -> str:
     """User text made safe for Telegram's Markdown.
 
@@ -434,7 +441,7 @@ class Session:
                 contacts.CLIENT,
                 inv.client_name,
                 email=inv.client_email or None,
-                tax_id=inv.client_id or None,
+                tax_id=_real_tax_id(inv.client_id),
                 address=inv.client_address or None,
             )
             inv.contact_id = contact_id
@@ -442,6 +449,42 @@ class Session:
         except Exception:
             logger.exception("Could not save the client")
             return None
+
+    def sync_contact(self) -> list[str]:
+        """Bring the stored client up to date with what this invoice goes out with.
+
+        An email dictated anew, or a NIF asked for because the record lacked one, used
+        to live only on that invoice -- so the next invoice asked again, or went to
+        the old address. Returns what was updated, in words, for the chat.
+        """
+        inv = self.invoice
+        if inv is None or inv.contact_id is None:
+            return []
+        stored = contacts.get(inv.contact_id)
+        if not stored:
+            return []
+        changes, said = {}, []
+        if (checklist.valid_email(inv.client_email)
+                and inv.client_email.lower() != (stored.get("email") or "").lower()):
+            changes["email"] = inv.client_email
+            said.append("el email")
+        tax_id = _real_tax_id(inv.client_id)
+        if (tax_id and checklist.valid_tax_id(tax_id)
+                and tax_id.upper() != (stored.get("tax_id") or "").upper()):
+            changes["tax_id"] = tax_id
+            said.append("el NIF")
+        address = (inv.client_address or "").strip()
+        if address and address != (stored.get("address") or "").strip():
+            changes["address"] = address
+            said.append("la dirección")
+        if not changes:
+            return []
+        try:
+            contacts.update(inv.contact_id, **changes)
+        except Exception:
+            logger.exception("Could not update the stored client")
+            return []
+        return said
 
 
 # ── Per-chat registry ────────────────────────────────────────────────────────

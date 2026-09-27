@@ -475,6 +475,7 @@ _NAV = (
         ("invoices.view", "/quotes", "✎", "Presupuestos"),
         ("invoices.view", "/recurring", "↻", "Recurrentes"),
         ("receivables.view", "/receivables", "↓", "Cobros"),
+        ("contacts.view", "/contacts", "☺", "Clientes"),
     )),
     ("Gastos", (
         ("bills.view", "/bills", "↑", "Proveedores"),
@@ -1658,6 +1659,242 @@ async def bills_delete(request: Request, bill_id: int):
         return refusal
     bills.delete(bill_id)
     return RedirectResponse("/bills", status_code=303)
+
+
+# ── Clients and suppliers ────────────────────────────────────────────────────
+
+def _contact_invoices(contact: dict) -> list[dict]:
+    """A client's issued invoices: linked by id, or -- for invoices from before clients
+    were stored -- by exactly the same name."""
+    from src import db as _db
+
+    conn = _db.connect()
+    rows = conn.execute(
+        "SELECT * FROM invoices WHERE status = 'issued' AND (contact_id = ? OR "
+        "(contact_id IS NULL AND client_name = ? COLLATE NOCASE)) "
+        "ORDER BY date DESC, id DESC", (contact["id"], contact["name"])).fetchall()
+    return [store._issued_payload(conn, r) for r in rows]
+
+
+@app.get("/contacts", response_class=HTMLResponse)
+async def contacts_page(request: Request, kind: str = "client", q: str = ""):
+    from src import contacts
+
+    user, refusal = _guard(request, "contacts.view")
+    if refusal:
+        return refusal
+    kind = contacts.SUPPLIER if kind == contacts.SUPPLIER else contacts.CLIENT
+    everyone = contacts.list_all(kind)
+    needle = q.strip().lower()
+    if needle:
+        everyone = [c for c in everyone
+                    if needle in " ".join(str(c.get(k) or "") for k in
+                                          ("name", "tax_id", "email", "phone")).lower()]
+
+    # What each one owes us / we owe them, in one pass rather than a query per row.
+    owed: dict = {}
+    if kind == contacts.CLIENT and accounts.can(user, "receivables.view"):
+        for record in store.list_unpaid():
+            key = record["invoice"].contact_id or record["invoice"].client_name.lower()
+            owed[key] = owed.get(key, 0) + _totals(record["invoice"])[2]
+    elif kind == contacts.SUPPLIER and accounts.can(user, "bills.view"):
+        for bill in bills.list_all(unpaid_only=True):
+            key = bill["supplier_id"] or bill["supplier_name"].lower()
+            owed[key] = owed.get(key, 0) + bill["total"]
+
+    rows = []
+    for c in everyone:
+        pending = owed.get(c["id"], 0) + owed.get(c["name"].lower(), 0)
+        rows.append(
+            f"<tr><td><a class='strong' href='/contacts/{c['id']}'>"
+            f"{html.escape(c['name'])}</a></td>"
+            f"<td class='muted'>{html.escape(c['tax_id'] or '—')}</td>"
+            f"<td class='muted'>{html.escape(c['email'] or '—')}</td>"
+            f"<td class='muted'>{html.escape(c['phone'] or '')}</td>"
+            f"<td class='num {'total' if pending else 'muted'}'>"
+            f"{_money(pending) if pending else '—'}</td></tr>")
+
+    tabs = "".join(
+        f"<a class='btn btn-sm {'btn-primary' if kind == k else 'btn-neutral'}' "
+        f"href='/contacts?kind={k}'>{label}</a>"
+        for k, label in ((contacts.CLIENT, "Clientes"), (contacts.SUPPLIER, "Proveedores")))
+    search = (f"<form method='get' action='/contacts' class='billform'>"
+              f"<input type='hidden' name='kind' value='{kind}'>"
+              f"<input name='q' value='{html.escape(q)}' "
+              f"placeholder='Buscar por nombre, NIF, email o teléfono'>"
+              f"<button class='btn-neutral'>Buscar</button></form>")
+    new_form = ""
+    if accounts.can(user, "contacts.manage"):
+        new_form = (
+            "<div class='card'><div class='card-title'>Añadir "
+            f"{'un cliente' if kind == contacts.CLIENT else 'un proveedor'}</div>"
+            "<form method='post' action='/contacts/new' class='billform'>"
+            f"<input type='hidden' name='kind' value='{kind}'>"
+            "<input name='name' placeholder='Nombre o razón social' required>"
+            "<input name='tax_id' placeholder='NIF/CIF'>"
+            "<input name='email' type='email' placeholder='Email'>"
+            "<button class='btn-primary'>Añadir</button></form></div>")
+
+    owed_label = "Te debe" if kind == contacts.CLIENT else "Le debes"
+    table = ("<div class='card'><div class='table-wrap'><table><thead><tr>"
+             "<th>Nombre</th><th>NIF/CIF</th><th>Email</th><th>Teléfono</th>"
+             f"<th class='num'>{owed_label}</th></tr></thead>"
+             f"<tbody>{''.join(rows)}</tbody></table></div></div>"
+             if rows else _empty("Nadie todavía" if not needle else "Sin resultados",
+                                 "Los clientes se guardan solos con su primera factura."
+                                 if kind == contacts.CLIENT else
+                                 "Los proveedores se guardan solos con su primer gasto."))
+    body = (f"<div class='actions' style='margin-bottom:14px'>{tabs}</div>"
+            f"<div class='card'>{search}</div>{new_form}{table}")
+    return _page("Clientes y proveedores", body, user,
+                 subtitle=f"{len(everyone)} {'cliente(s)' if kind == contacts.CLIENT else 'proveedor(es)'}",
+                 current="/contacts")
+
+
+@app.post("/contacts/new")
+async def contacts_new(request: Request):
+    from src import contacts
+
+    user, refusal = _guard(request, "contacts.manage")
+    if refusal:
+        return refusal
+    form = await request.form()
+    kind = contacts.SUPPLIER if form.get("kind") == contacts.SUPPLIER else contacts.CLIENT
+    try:
+        contact_id = contacts.create(
+            kind, (form.get("name") or "").strip(),
+            tax_id=(form.get("tax_id") or "").strip().upper() or None,
+            email=(form.get("email") or "").strip() or None)
+    except Exception as exc:
+        return _page("No se pudo añadir", f"<div class='card'>{html.escape(_why(exc))}"
+                     f"<div class='actions'><a class='btn btn-neutral' "
+                     f"href='/contacts?kind={kind}'>Volver</a></div></div>", user)
+    return RedirectResponse(f"/contacts/{contact_id}", status_code=303)
+
+
+def _why(exc: Exception) -> str:
+    """A database refusal in words: the only likely one is a tax id already on file."""
+    if "UNIQUE" in str(exc):
+        return "Ya hay otro con ese NIF/CIF."
+    return str(exc)
+
+
+@app.get("/contacts/{contact_id}", response_class=HTMLResponse)
+async def contact_detail(request: Request, contact_id: int):
+    from src import contacts
+
+    user, refusal = _guard(request, "contacts.view")
+    if refusal:
+        return refusal
+    contact = contacts.get(contact_id)
+    if contact is None:
+        return _page("No encontrado", "<div class='card'>Ese contacto no existe.</div>", user)
+    may_edit = accounts.can(user, "contacts.manage")
+    is_client = contact["kind"] == contacts.CLIENT
+
+    def field(label, name, value, kind="text", hint=""):
+        readonly = "" if may_edit else " readonly"
+        note = f" <span class='field-hint'>{html.escape(hint)}</span>" if hint else ""
+        return (f"<label>{html.escape(label)}{note}</label><input name='{name}' "
+                f"type='{kind}' value='{html.escape(str(value if value is not None else ''))}'"
+                f"{readonly}>")
+
+    form = (
+        f"<form method='post' action='/contacts/{contact_id}'><div class='card'>"
+        "<div class='grid-2'><div>"
+        + field("Nombre o razón social", "name", contact["name"])
+        + field("NIF/CIF", "tax_id", contact["tax_id"])
+        + field("Email", "email", contact["email"], "email",
+                "a donde van sus facturas" if is_client else "")
+        + "</div><div>"
+        + field("Teléfono", "phone", contact["phone"])
+        + field("Dirección fiscal", "address", contact["address"])
+        + field("Días para pagar", "payment_terms_days", contact["payment_terms_days"],
+                "number")
+        + (field("Retención IRPF (%)", "irpf_rate", contact.get("irpf_rate"), "text",
+                 "vacío = la de la empresa") if is_client else "")
+        + "</div></div>"
+        + f"<label>Notas</label><textarea name='notes' rows='2'"
+        f"{'' if may_edit else ' readonly'}>{html.escape(contact['notes'] or '')}</textarea>"
+        + ("<div class='actions'><button class='btn-primary'>Guardar</button>"
+           "<a class='btn btn-neutral' href='/contacts"
+           f"?kind={contact['kind']}'>Volver</a></div>" if may_edit else "")
+        + "</div></form>")
+
+    history = ""
+    if is_client and accounts.can(user, "invoices.view"):
+        records = _contact_invoices(contact)
+        this_year = str(date.today().year)
+        year_total = sum(_totals(r["invoice"])[0] for r in records
+                         if r["invoice"].date.isoformat().startswith(this_year))
+        unpaid = sum(_totals(r["invoice"])[2] for r in records
+                     if not r["paid_at"] and not r["rectified_by"]
+                     and not r["invoice"].rectifies)
+        rows = "".join(
+            f"<tr><td class='strong'>{html.escape(r['invoice'].invoice_number)}</td>"
+            f"<td class='muted'>{r['invoice'].date.strftime('%d/%m/%Y')}</td>"
+            f"<td>{'cobrada' if r['paid_at'] else 'anulada' if r['rectified_by'] else 'pendiente'}</td>"
+            f"<td class='num'>{_money(_totals(r['invoice'])[2])}</td>"
+            f"<td><a class='btn btn-neutral btn-sm' target='_blank' "
+            f"href='/issued/{html.escape(r['invoice'].invoice_number)}/pdf'>PDF</a></td></tr>"
+            for r in records[:50])
+        history = (
+            f"<div class='stats'>{_stat(f'Facturado en {this_year} (sin IVA)', _money(year_total))}"
+            f"{_stat('Pendiente de cobro', _money(unpaid), '', 'bad' if unpaid else 'good')}</div>"
+            + ("<div class='card'><div class='card-title'>Sus facturas</div>"
+               "<div class='table-wrap'><table><tbody>" + rows + "</tbody></table></div></div>"
+               if rows else ""))
+    elif not is_client and accounts.can(user, "bills.view"):
+        supplier_bills = bills.list_all(supplier_id=contact_id)
+        rows = "".join(
+            f"<tr><td>{html.escape(b['reference'] or '—')}</td>"
+            f"<td class='muted'>{_es_date(b['date'])}</td>"
+            f"<td>{'pagada' if b['paid'] else 'pendiente'}</td>"
+            f"<td class='num'>{_money(b['total'])}</td></tr>" for b in supplier_bills[:50])
+        if rows:
+            history = ("<div class='card'><div class='card-title'>Sus facturas</div>"
+                       "<div class='table-wrap'><table><tbody>" + rows +
+                       "</tbody></table></div></div>")
+
+    return _page(contact["name"], form + history, user,
+                 subtitle="Cliente" if is_client else "Proveedor", current="/contacts")
+
+
+@app.post("/contacts/{contact_id}")
+async def contact_save(request: Request, contact_id: int):
+    from src import contacts
+
+    user, refusal = _guard(request, "contacts.manage")
+    if refusal:
+        return refusal
+    if contacts.get(contact_id) is None:
+        return RedirectResponse("/contacts", status_code=303)
+    form = await request.form()
+    changes = {k: (form.get(k) or "").strip() or None
+               for k in ("name", "tax_id", "email", "phone", "address", "notes")}
+    if not changes["name"]:
+        return _page("Falta el nombre", "<div class='card'>Un contacto necesita nombre."
+                     f"<div class='actions'><a class='btn btn-neutral' "
+                     f"href='/contacts/{contact_id}'>Volver</a></div></div>", user)
+    if changes["tax_id"]:
+        changes["tax_id"] = changes["tax_id"].upper().replace(" ", "")
+    try:
+        changes["payment_terms_days"] = int(form.get("payment_terms_days") or 30)
+    except ValueError:
+        pass
+    raw_irpf = (form.get("irpf_rate") or "").strip().replace(",", ".")
+    if "irpf_rate" in form:
+        try:
+            changes["irpf_rate"] = float(raw_irpf) if raw_irpf else None
+        except ValueError:
+            pass
+    try:
+        contacts.update(contact_id, **changes)
+    except Exception as exc:
+        return _page("No se pudo guardar", f"<div class='card'>{html.escape(_why(exc))}"
+                     f"<div class='actions'><a class='btn btn-neutral' "
+                     f"href='/contacts/{contact_id}'>Volver</a></div></div>", user)
+    return RedirectResponse(f"/contacts/{contact_id}", status_code=303)
 
 
 # ── Money owed to us ─────────────────────────────────────────────────────────

@@ -1042,6 +1042,8 @@ async def _issue_quote(update, session, user: dict) -> None:
     try:
         if session.contact_is_new():
             session.save_contact()
+        else:
+            session.sync_contact()
         session.remember_terms()
         result = await asyncio.to_thread(quotes.issue, invoice, user.get("id"))
         _, _, total = compute_totals(invoice, config)
@@ -1136,6 +1138,11 @@ async def _approve(update, session, user: dict) -> None:
         saved_note = ""
         if session.contact_is_new() and session.save_contact():
             saved_note = f"\n\n💾 He guardado a {invoice.client_name} en tus clientes."
+        else:
+            updated = session.sync_contact()
+            if updated:
+                saved_note = (f"\n\n📇 He actualizado {' y '.join(updated)} de "
+                              f"{invoice.client_name} en tus clientes.")
         session.remember_terms()
 
         # Numbering, PDF, Sheets and Gmail: slow and blocking, so off the event loop.
@@ -1193,6 +1200,8 @@ async def _queue(update, session, user: dict, ask_for_approval: bool) -> None:
         # Remember a new client now: whoever approves it later should not lose them.
         if session.contact_is_new():
             session.save_contact()
+        else:
+            session.sync_contact()
         session.remember_terms()
 
         token = store.new_token()
