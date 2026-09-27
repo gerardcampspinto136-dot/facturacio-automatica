@@ -13,6 +13,32 @@ def _int(value) -> int:
         return 0
 
 
+def _series(value) -> str:
+    """A numbering series, or "" when it is blank or unusable (never a crash)."""
+    from src.invoice_number import clean_series
+
+    try:
+        return clean_series(value)
+    except ValueError:
+        logging.getLogger(__name__).warning("Ignoring unusable invoice series %r", value)
+        return ""
+
+
+def days_from_terms(terms: str) -> int:
+    """Days to pay, read from the payment terms printed on the invoice.
+
+    "30 días" -> 30, "60 dias fecha factura" -> 60, "Al contado" -> 0. Anything else
+    falls back to 30, the legal default between businesses in Spain.
+    """
+    import re
+
+    text = (terms or "").lower()
+    if any(word in text for word in ("contado", "inmediato", "a la vista")):
+        return 0
+    match = re.search(r"\d+", text)
+    return int(match.group()) if match else 30
+
+
 class CompanyConfig:
     def __init__(self, config_path: str = "config/company.yaml"):
         with open(config_path, "r", encoding="utf-8") as f:
@@ -35,10 +61,15 @@ class CompanyConfig:
 
         invoice = data.get("invoice", {})
         self.tax_rate = invoice.get("tax_rate", 21)
+        # IRPF withheld by the client on every invoice, unless said otherwise: 15 for
+        # a professional (7 in their first years), 0 for everyone else.
+        self.irpf_rate = float(invoice.get("irpf_rate", 0) or 0)
         self.currency = invoice.get("currency", "EUR")
         self.currency_symbol = invoice.get("currency_symbol", "€")
         self.payment_terms = invoice.get("payment_terms", "30 días")
         self.bank_account = invoice.get("bank_account", "")
+        # Numbering series: "" -> 2026-0001, "A" -> A-2026-0001.
+        self.invoice_series = _series(invoice.get("series", ""))
         # True  -> a dictated price is assumed to already contain VAT
         # False -> VAT is added on top (the usual B2B convention)
         # Saying "IVA incluido" or "más IVA" out loud overrides this per invoice.
@@ -111,7 +142,9 @@ class CompanyConfig:
         take("invoice_email", "email")
         take("iban", "bank_account")
         take("tax_rate", cast=float)
+        take("irpf_rate", cast=float)
         take("payment_terms")
+        take("invoice_series", cast=_series)
         take("logo_path")
         take("review_mode")
         take("telegram_chat_id", "notify_telegram_chat_id", cast=_int)
@@ -121,6 +154,11 @@ class CompanyConfig:
         self.company_id = company.get("id")
         self.is_placeholder = self._looks_like_placeholder()
         return self
+
+    @property
+    def payment_days(self) -> int:
+        """Days until an invoice falls due, from the payment terms printed on it."""
+        return days_from_terms(self.payment_terms)
 
     def _looks_like_placeholder(self) -> bool:
         return (

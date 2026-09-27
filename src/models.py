@@ -36,6 +36,11 @@ class InvoiceData:
     prices_normalized: bool = False
     # Link to the stored client record, when one was matched.
     contact_id: Optional[int] = None
+    # The VAT and IRPF-withholding percentages for THIS invoice. None means "the
+    # company default", resolved and frozen when the invoice is issued -- so changing
+    # the default later never rewrites an invoice already sent.
+    tax_rate: Optional[float] = None
+    irpf_rate: Optional[float] = None
     # Stock moved when this invoice was issued, so the bot can report it in the chat.
     # Filled in by finalize_invoice; not part of the invoice document itself.
     stock_movements: list = field(default_factory=list)

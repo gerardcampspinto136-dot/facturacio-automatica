@@ -70,8 +70,9 @@ class Message:
         self._chat.markups.append(kw.get("reply_markup"))
         return Sent(self._chat, text)
 
-    async def reply_document(self, document=None, filename=None, caption=None, **_kw):
+    async def reply_document(self, document=None, filename=None, caption=None, **kw):
         self._chat.documents.append((filename, caption))
+        self._chat.markups.append(kw.get("reply_markup"))
         if caption:
             self._chat.replies.append(caption)
         return Sent(self._chat, caption)

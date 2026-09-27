@@ -21,13 +21,11 @@ from datetime import date
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from src import accounts, bills, store
+from src import accounts, bills, finalize, rectify, store
 from src.totals import compute_totals, format_money as _fmt
 from src.config_loader import get_config
-from src.finalize import finalize_invoice
 from src.invoice_generator import generate_invoice_pdf
 from src.models import InvoiceData, InvoiceItem
-from src.rectify import create_rectifying_invoice
 
 logger = logging.getLogger(__name__)
 
@@ -862,7 +860,7 @@ async def approve(request: Request, token: str):
     inv: InvoiceData = p["invoice"]
     inv.invoice_number = None  # force a fresh gap-free number on finalize
     try:
-        await asyncio.to_thread(finalize_invoice, inv, token)
+        result = await asyncio.to_thread(finalize.issue, inv, token)
     except KeyError:
         # Approved from Telegram, or by a colleague, a moment earlier.
         return RedirectResponse("/", status_code=303)
@@ -872,8 +870,8 @@ async def approve(request: Request, token: str):
     await asyncio.to_thread(
         notify.tell_creator, p,
         f"✅ {_person(user)} ha aprobado tu factura para {inv.client_name}: "
-        f"{inv.invoice_number}.")
-    return RedirectResponse("/", status_code=303)
+        f"{result.number}.\n{result.email_status}")
+    return RedirectResponse("/issued", status_code=303)
 
 
 @app.post("/invoice/{token}/reject")
@@ -908,6 +906,7 @@ async def issued(request: Request):
             user, current="/issued")
 
     may_rectify = accounts.can(user, "invoices.rectify")
+    may_send = accounts.can(user, "invoices.approve")
     total_issued = sum(_totals(r["invoice"])[2] for r in records)
 
     rows = []
@@ -915,6 +914,7 @@ async def issued(request: Request):
         inv = r["invoice"]
         _, _, total = _totals(inv)
         rectified = r.get("rectified_by")
+        number = html.escape(inv.invoice_number or "")
 
         if rectified:
             state = (f"<span class='badge badge-muted'>anulada por "
@@ -924,23 +924,37 @@ async def issued(request: Request):
                      f"{html.escape(inv.rectifies)}</span>")
         else:
             state = "<span class='badge badge-ok'>emitida</span>"
+        # The email is the one part of issuing that can fail on its own; say so here
+        # rather than let a client wait for an invoice that never left.
+        if r.get("email_error") and not r.get("email_sent_at"):
+            state += (f" <span class='badge badge-danger' "
+                      f"title='{html.escape(r['email_error'])}'>email no enviado</span>")
 
-        action = ""
+        actions = [f"<a class='btn btn-neutral btn-sm' href='/issued/{number}/pdf' "
+                   f"target='_blank'>PDF</a>"]
+        if may_send and inv.client_email:
+            label = "Reintentar envío" if r.get("email_error") else "Reenviar"
+            actions.append(
+                f"<form method='post' action='/issued/{number}/resend' "
+                f"onsubmit=\"return confirm('¿Enviar otra vez la factura {number} a "
+                f"{html.escape(inv.client_email)}?')\">"
+                f"<button class='btn-neutral btn-sm'>{label}</button></form>")
         if may_rectify and not rectified and not inv.rectifies:
-            action = (
-                f"<form method='post' action='/invoice/"
-                f"{html.escape(inv.invoice_number)}/rectify' "
-                f"onsubmit=\"return confirm('¿Emitir una factura rectificativa que "
-                f"anula {html.escape(inv.invoice_number)}?')\">"
+            actions.append(
+                f"<form method='post' action='/invoice/{number}/rectify' "
+                f"onsubmit=\"var m = prompt('Se emitirá una factura rectificativa que "
+                f"anula la {number}. Motivo:', 'Anulación de la factura'); "
+                f"if (m === null) return false; this.reason.value = m; return true;\">"
+                f"<input type='hidden' name='reason'>"
                 f"<button class='btn-neutral btn-sm'>Anular</button></form>")
 
         rows.append(
-            f"<tr><td class='strong'>{html.escape(inv.invoice_number or '')}</td>"
+            f"<tr><td class='strong'>{number}</td>"
             f"<td>{html.escape(inv.client_name or '')}</td>"
-            f"<td class='muted'>{r.get('issued_at','')[:10]}</td>"
+            f"<td class='muted'>{inv.date.strftime('%d/%m/%Y')}</td>"
             f"<td>{state}</td>"
             f"<td class='num total'>{_money(total)}</td>"
-            f"<td><div class='actions'>{action}</div></td></tr>"
+            f"<td><div class='actions'>{''.join(actions)}</div></td></tr>"
         )
 
     body = (
@@ -963,10 +977,38 @@ async def rectify_route(request: Request, number: str):
     user, refusal = _guard(request, "invoices.rectify")
     if refusal:
         return refusal
+    form = await request.form()
     try:
-        create_rectifying_invoice(number)
+        await asyncio.to_thread(rectify.rectify, number,
+                                (form.get("reason") or "").strip() or None)
     except ValueError as exc:
         return _page("No se pudo anular", f"<div class='card'>{html.escape(str(exc))}</div>", user)
+    return RedirectResponse("/issued", status_code=303)
+
+
+@app.get("/issued/{number}/pdf")
+async def issued_pdf(request: Request, number: str):
+    user, refusal = _guard(request, "invoices.view")
+    if refusal:
+        return refusal
+    path = await asyncio.to_thread(finalize.pdf_for, number)
+    if path is None:
+        return _page("No encontrada", "<div class='card'>Esa factura no existe.</div>", user)
+    return FileResponse(path, media_type="application/pdf",
+                        filename=f"Factura_{number}.pdf")
+
+
+@app.post("/issued/{number}/resend")
+async def issued_resend(request: Request, number: str):
+    user, refusal = _guard(request, "invoices.approve")
+    if refusal:
+        return refusal
+    sent, error = await asyncio.to_thread(finalize.resend, number)
+    if not sent:
+        return _page("No se pudo enviar",
+                     f"<div class='card'>{html.escape(error or 'Error desconocido')}"
+                     "<div class='actions'><a class='btn btn-neutral' href='/issued'>"
+                     "Volver</a></div></div>", user)
     return RedirectResponse("/issued", status_code=303)
 
 

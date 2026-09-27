@@ -712,6 +712,14 @@ async def company_settings_save(request: Request, company_id: int):
     values["prices_include_tax"] = 1 if form.get("prices_include_tax") == "1" else 0
     if values.get("review_mode") not in ("manual", "auto"):
         values.pop("review_mode", None)
+    if "invoice_series" in values:
+        from src.invoice_number import clean_series
+
+        try:
+            values["invoice_series"] = clean_series(values["invoice_series"])
+        except ValueError as exc:
+            return _error(user, "Serie no válida", str(exc),
+                          f"/admin/{company_id}/settings")
 
     try:
         accounts.update_company(company_id, **values)

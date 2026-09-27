@@ -20,7 +20,8 @@ from typing import Optional
 from src import checklist, contacts
 from src.config_loader import get_config
 from src.models import InvoiceData
-from src.totals import compute_totals, format_money, normalize_prices, summary_lines
+from src.totals import (compute_totals, format_money, normalize_prices, summary_lines,
+                        vat_rate)
 
 logger = logging.getLogger(__name__)
 
@@ -322,8 +323,9 @@ class Session:
 
         if was_inclusive:
             # Undo the normalisation: put the gross figures back, then treat as exclusive.
+            rate = vat_rate(inv, config)
             for item in inv.items:
-                item.total = round(item.total * (1 + config.tax_rate / 100), 2)
+                item.total = round(item.total * (1 + rate / 100), 2)
                 item.unit_price = (
                     round(item.total / item.quantity, 2) if item.quantity else item.total
                 )

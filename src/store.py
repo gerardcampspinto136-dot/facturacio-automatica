@@ -114,6 +114,8 @@ def _row_to_invoice(conn, row) -> InvoiceData:
         # Line prices are stored net, so they must not be converted a second time.
         prices_normalized=True,
         contact_id=row["contact_id"],
+        tax_rate=row["tax_rate"],
+        irpf_rate=row["irpf_rate"],
     )
 
 
@@ -132,10 +134,13 @@ def _pending_payload(conn, row) -> dict:
 
 def _issued_payload(conn, row) -> dict:
     return {
+        "id": row["id"],
         "issued_at": row["issued_at"],
         "rectified_by": row["rectified_by"],
         "paid_at": row["paid_at"],
         "due_date": row["due_date"],
+        "email_sent_at": row["email_sent_at"],
+        "email_error": row["email_error"],
         "invoice": _row_to_invoice(conn, row),
     }
 
@@ -170,9 +175,10 @@ def add_pending(invoice: InvoiceData, draft_path: str, *, token: Optional[str] =
         cur = conn.execute(
             "INSERT INTO invoices "
             "(status, token, client_name, client_email, client_address, client_id, "
-            " date, notes, rectifies, prices_include_tax, contact_id, draft_path, "
-            " created_by, created_by_name, created_chat_id, created_at) "
-            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " date, notes, rectifies, prices_include_tax, contact_id, tax_rate, "
+            " irpf_rate, draft_path, created_by, created_by_name, created_chat_id, "
+            " created_at) "
+            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 token,
                 invoice.client_name,
@@ -184,6 +190,8 @@ def add_pending(invoice: InvoiceData, draft_path: str, *, token: Optional[str] =
                 invoice.rectifies,
                 None if invoice.prices_include_tax is None else int(invoice.prices_include_tax),
                 invoice.contact_id,
+                invoice.tax_rate,
+                invoice.irpf_rate,
                 draft_path,
                 created_by,
                 created_by_name,
@@ -227,7 +235,8 @@ def update_pending(token: str, invoice: InvoiceData, draft_path: Optional[str] =
             raise KeyError(f"Pending invoice {token} not found")
         conn.execute(
             "UPDATE invoices SET client_name = ?, client_email = ?, client_address = ?, "
-            "client_id = ?, date = ?, notes = ?, prices_include_tax = ?"
+            "client_id = ?, date = ?, notes = ?, prices_include_tax = ?, tax_rate = ?, "
+            "irpf_rate = ?"
             + (", draft_path = ?" if draft_path is not None else "")
             + " WHERE id = ?",
             (
@@ -238,6 +247,8 @@ def update_pending(token: str, invoice: InvoiceData, draft_path: Optional[str] =
                 invoice.date.isoformat() if invoice.date else date.today().isoformat(),
                 invoice.notes,
                 None if invoice.prices_include_tax is None else int(invoice.prices_include_tax),
+                invoice.tax_rate,
+                invoice.irpf_rate,
                 *([draft_path] if draft_path is not None else []),
                 row["id"],
             ),
@@ -266,87 +277,122 @@ def remove_pending(token: str) -> None:
 def approve_pending(token: str, number: str, due_days: int = 30) -> None:
     """Promote a reviewed draft to issued, under the number just assigned to it.
 
-    Kept separate from record_issued() so the draft row -- and its token, creation time
-    and item ids -- survives approval instead of being deleted and rewritten.
+    The draft row -- its token, creation time and author -- survives approval instead
+    of being deleted and rewritten.
     """
-    issued_at = datetime.now().isoformat(timespec="seconds")
     with db.transaction() as conn:
         row = conn.execute(
-            "SELECT id, date FROM invoices WHERE token = ? AND status = 'pending'",
-            (token,),
+            "SELECT * FROM invoices WHERE token = ? AND status = 'pending'", (token,)
         ).fetchone()
         if row is None:
             raise KeyError(f"Pending invoice {token} not found")
-        base = date.fromisoformat(row["date"]) if row["date"] else date.today()
-        conn.execute(
-            "UPDATE invoices SET status = 'issued', number = ?, issued_at = ?, "
-            "due_date = ? WHERE id = ?",
-            (number, issued_at, (base + timedelta(days=due_days)).isoformat(), row["id"]),
-        )
+        write_issued(conn, _row_to_invoice(conn, row), number, token=token,
+                     due_days=due_days)
 
 
 # ── Issued record ────────────────────────────────────────────────────────────
 
-def record_issued(invoice: InvoiceData, due_days: int = 30) -> None:
-    """Record a finalized invoice.
+def _flag(value: Optional[bool]):
+    return None if value is None else int(value)
 
-    If the invoice was previously a pending draft it is updated in place; otherwise
-    (auto mode, and rectifying invoices) a new issued row is written.
+
+def write_issued(conn, invoice: InvoiceData, number: str, *, token: Optional[str] = None,
+                 due_days: int = 30) -> int:
+    """Record `invoice` as issued under `number`, inside the caller's transaction.
+
+    The caller holds the transaction in which `number` was consumed, so the number and
+    the invoice using it are committed together or not at all -- a failure anywhere
+    rolls the counter back as well, and the series never gets a gap.
+
+    An issued row is frozen by triggers (see db.py), so everything is written while the
+    row is still 'pending' and the status flips last. With `token`, the waiting draft is
+    the row that becomes the invoice; a token that is no longer pending (someone else
+    approved it a moment ago) raises KeyError and rolls everything back.
     """
-    issued_at = datetime.now().isoformat(timespec="seconds")
     inv_date = invoice.date or date.today()
-    due = (inv_date + timedelta(days=due_days)).isoformat()
+    fields = (
+        invoice.client_name,
+        invoice.client_email,
+        invoice.client_address,
+        invoice.client_id,
+        inv_date.isoformat(),
+        invoice.notes,
+        invoice.rectifies,
+        _flag(invoice.prices_include_tax),
+        invoice.contact_id,
+        invoice.tax_rate,
+        invoice.irpf_rate,
+    )
 
-    with db.transaction() as conn:
-        existing = conn.execute(
-            "SELECT id FROM invoices WHERE number = ?", (invoice.invoice_number,)
+    if token:
+        row = conn.execute(
+            "SELECT id FROM invoices WHERE token = ? AND status = 'pending'", (token,)
         ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE invoices SET status = 'issued', client_name = ?, client_email = ?, "
-                "client_address = ?, client_id = ?, date = ?, notes = ?, rectifies = ?, "
-                "prices_include_tax = ?, contact_id = COALESCE(?, contact_id), "
-                "issued_at = COALESCE(issued_at, ?), due_date = COALESCE(due_date, ?) "
-                "WHERE id = ?",
-                (
-                    invoice.client_name,
-                    invoice.client_email,
-                    invoice.client_address,
-                    invoice.client_id,
-                    inv_date.isoformat(),
-                    invoice.notes,
-                    invoice.rectifies,
-                    None if invoice.prices_include_tax is None else int(invoice.prices_include_tax),
-                    invoice.contact_id,
-                    issued_at,
-                    due,
-                    existing["id"],
-                ),
-            )
-            invoice_id = existing["id"]
+        if row is None:
+            raise KeyError(f"Pending invoice {token} not found")
+        invoice_id = row["id"]
+        conn.execute(
+            "UPDATE invoices SET client_name = ?, client_email = ?, client_address = ?, "
+            "client_id = ?, date = ?, notes = ?, rectifies = ?, prices_include_tax = ?, "
+            "contact_id = COALESCE(?, contact_id), tax_rate = ?, irpf_rate = ? "
+            "WHERE id = ?",
+            (*fields, invoice_id),
+        )
+    else:
+        cur = conn.execute(
+            "INSERT INTO invoices "
+            "(status, client_name, client_email, client_address, client_id, date, notes, "
+            " rectifies, prices_include_tax, contact_id, tax_rate, irpf_rate) "
+            "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            fields,
+        )
+        invoice_id = cur.lastrowid
+
+    _write_items(conn, invoice_id, invoice)
+    conn.execute(
+        "UPDATE invoices SET status = 'issued', number = ?, issued_at = ?, due_date = ? "
+        "WHERE id = ?",
+        (
+            number,
+            datetime.now().isoformat(timespec="seconds"),
+            (inv_date + timedelta(days=due_days)).isoformat(),
+            invoice_id,
+        ),
+    )
+    return invoice_id
+
+
+def record_issued(invoice: InvoiceData, due_days: int = 30) -> None:
+    """Record an invoice that already carries its number, in a transaction of its own.
+
+    Issuing normally goes through finalize.issue(), which consumes the number in the
+    same transaction; this is for callers that already hold one.
+    """
+    if not invoice.invoice_number:
+        raise ValueError("Una factura emitida necesita número")
+    with db.transaction() as conn:
+        if conn.execute("SELECT 1 FROM invoices WHERE number = ?",
+                        (invoice.invoice_number,)).fetchone():
+            raise ValueError(f"Ya existe la factura {invoice.invoice_number}")
+        write_issued(conn, invoice, invoice.invoice_number, due_days=due_days)
+
+
+def record_delivery(number: str, error: Optional[str] = None) -> None:
+    """Note whether the email carrying an issued invoice actually left.
+
+    The bot used to say "Enviada" whether or not Gmail had accepted it; this is what
+    lets it -- and the panel -- tell the truth, and offer to try again.
+    """
+    with db.transaction() as conn:
+        if error:
+            conn.execute("UPDATE invoices SET email_error = ? WHERE number = ?",
+                         (error[:500], number))
         else:
-            cur = conn.execute(
-                "INSERT INTO invoices "
-                "(status, number, client_name, client_email, client_address, client_id, "
-                " date, due_date, notes, rectifies, prices_include_tax, contact_id, issued_at) "
-                "VALUES ('issued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    invoice.invoice_number,
-                    invoice.client_name,
-                    invoice.client_email,
-                    invoice.client_address,
-                    invoice.client_id,
-                    inv_date.isoformat(),
-                    due,
-                    invoice.notes,
-                    invoice.rectifies,
-                    None if invoice.prices_include_tax is None else int(invoice.prices_include_tax),
-                    invoice.contact_id,
-                    issued_at,
-                ),
+            conn.execute(
+                "UPDATE invoices SET email_sent_at = ?, email_error = NULL "
+                "WHERE number = ?",
+                (datetime.now().isoformat(timespec="seconds"), number),
             )
-            invoice_id = cur.lastrowid
-        _write_items(conn, invoice_id, invoice)
 
 
 def get_issued(number: str) -> Optional[dict]:
@@ -481,11 +527,12 @@ def migrate_from_json() -> dict:
         if not invoice.invoice_number:
             continue
         with db.transaction() as c:
+            # Written as pending and flipped last: an issued row is frozen, items and all.
             cur = c.execute(
                 "INSERT OR IGNORE INTO invoices "
                 "(status, number, client_name, client_email, client_address, client_id, "
                 " date, notes, rectifies, rectified_by, issued_at) "
-                "VALUES ('issued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES ('pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     invoice.invoice_number,
                     invoice.client_name,
@@ -501,6 +548,8 @@ def migrate_from_json() -> dict:
             )
             if cur.lastrowid and cur.rowcount:
                 _write_items(c, cur.lastrowid, invoice)
+                c.execute("UPDATE invoices SET status = 'issued' WHERE id = ?",
+                          (cur.lastrowid,))
                 n_issued += 1
 
     # Invoice counters, in either the legacy flat shape or the per-series one.

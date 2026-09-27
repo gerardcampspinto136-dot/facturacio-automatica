@@ -219,6 +219,13 @@ _ADDED_COLUMNS = {
         ("created_by", "INTEGER"),
         ("created_by_name", "TEXT"),
         ("created_chat_id", "INTEGER"),
+        # The rates this invoice was issued at. NULL on invoices from before this
+        # column existed, which then fall back to the company default.
+        ("tax_rate", "REAL"),
+        ("irpf_rate", "REAL"),
+        # Whether the email to the client actually went out, and why not if it did not.
+        ("email_sent_at", "TEXT"),
+        ("email_error", "TEXT"),
     ],
     # Everything the admin panel needs to set up a client without editing YAML. Added
     # here rather than in CREATE TABLE so an installation that already has companies
@@ -255,6 +262,47 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram
     ON users (telegram_id) WHERE telegram_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram_code
     ON users (telegram_code) WHERE telegram_code IS NOT NULL;
+
+-- An issued invoice is a legal document: it is corrected by issuing a rectifying
+-- invoice, never by editing or deleting it (and Verifactu requires exactly that).
+-- Enforced here rather than trusted to the code, so no future bug and no hand-run
+-- UPDATE can quietly rewrite one. Payment tracking, the rectified-by link and the
+-- email delivery status are bookkeeping about the invoice, not part of it, so they
+-- stay writable.
+CREATE TRIGGER IF NOT EXISTS trg_issued_invoice_frozen
+BEFORE UPDATE OF number, status, client_name, client_email, client_address, client_id,
+                 date, notes, rectifies, prices_include_tax, tax_rate, irpf_rate
+ON invoices WHEN OLD.status = 'issued'
+BEGIN
+    SELECT RAISE(ABORT, 'Una factura emitida no se puede modificar: emite una rectificativa.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_issued_invoice_kept
+BEFORE DELETE ON invoices WHEN OLD.status = 'issued'
+BEGIN
+    SELECT RAISE(ABORT, 'Una factura emitida no se puede borrar: emite una rectificativa.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_issued_items_no_insert
+BEFORE INSERT ON invoice_items
+WHEN (SELECT status FROM invoices WHERE id = NEW.invoice_id) = 'issued'
+BEGIN
+    SELECT RAISE(ABORT, 'Una factura emitida no se puede modificar: emite una rectificativa.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_issued_items_no_update
+BEFORE UPDATE ON invoice_items
+WHEN (SELECT status FROM invoices WHERE id = OLD.invoice_id) = 'issued'
+BEGIN
+    SELECT RAISE(ABORT, 'Una factura emitida no se puede modificar: emite una rectificativa.');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_issued_items_no_delete
+BEFORE DELETE ON invoice_items
+WHEN (SELECT status FROM invoices WHERE id = OLD.invoice_id) = 'issued'
+BEGIN
+    SELECT RAISE(ABORT, 'Una factura emitida no se puede modificar: emite una rectificativa.');
+END;
 """
 
 

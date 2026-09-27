@@ -14,13 +14,11 @@ from telegram.ext import (
 )
 from telegram.helpers import escape_markdown
 
-from src import (accounts, bills, conversation, finalize, notify, receipts, store,
-                 telegram_access)
+from src import (accounts, bills, conversation, finalize, notify, receipts, rectify,
+                 store, telegram_access)
 from src.config_loader import get_config
-from src.finalize import finalize_invoice
 from src.invoice_generator import generate_invoice_pdf
 from src.parser import parse_invoice_from_transcript
-from src.rectify import create_rectifying_invoice
 from src.totals import compute_totals, format_money
 from src.transcription import transcribe_audio
 
@@ -41,6 +39,7 @@ _WELCOME = (
     "Comandos:\n"
     "• /ayuda — cómo hablarme y ejemplos\n"
     "• /pendientes — facturas esperando aprobación\n"
+    "• /factura <número> — el PDF de una factura emitida\n"
     "• /clientes — clientes que ya tengo guardados\n"
     "• /cancelar — descartar la factura en curso\n"
     "• /anular <número> — emitir una rectificativa\n"
@@ -90,7 +89,9 @@ _HELP = (
     "cuánto queda. No hace falta que digas el nombre exacto: _«20 tornillos M8»_ "
     "encuentra el producto igual.\n\n"
     "*Otras cosas*\n"
-    "`/anular 2026-0007` — factura rectificativa (devuelve el stock)\n"
+    "`/anular 2026-0007 motivo` — factura rectificativa (devuelve el stock)\n"
+    "`/factura 2026-0007` — el PDF de una factura · "
+    "`/reenviar 2026-0007` — mandársela otra vez al cliente\n"
     "`/gasto Ferretería Puig 242,50 F-2026/88` — anotar un gasto sin foto\n"
     "`/pagos` — cobros y pagos pendientes"
 )
@@ -502,35 +503,46 @@ async def cmd_inventario(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
+def _resend_button(result) -> list:
+    """A retry button when the email failed -- the invoice itself already exists."""
+    if result.emailed or not result.invoice.client_email:
+        return []
+    return [("🔁 Reintentar el envío", f"resend:{result.number}")]
+
+
 async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/anular <número> [motivo]: cancel an issued invoice with a rectifying one."""
     if await _gate(update, "invoices.rectify") is None:
         return
     if not context.args:
         await update.message.reply_text(
-            "Uso: `/anular <número de factura>`\nEjemplo: `/anular 2026-0007`",
+            "Uso: `/anular <número de factura> [motivo]`\n"
+            "Ejemplo: `/anular 2026-0007 precio equivocado`",
             parse_mode="Markdown",
         )
         return
 
     number = context.args[0].strip()
+    reason = " ".join(context.args[1:]).strip() or None
     status = await update.message.reply_text(
         f"Emitiendo factura rectificativa que anula *{_md(number)}*...",
         parse_mode="Markdown",
     )
     try:
-        rectifying, pdf_path = await asyncio.to_thread(create_rectifying_invoice, number)
+        result = await asyncio.to_thread(rectify.rectify, number, reason)
         config = get_config()
-        _, _, total = compute_totals(rectifying, config)
-        with open(pdf_path, "rb") as pdf_file:
+        _, _, total = compute_totals(result.invoice, config)
+        with open(result.pdf_path, "rb") as pdf_file:
             await update.message.reply_document(
                 document=pdf_file,
-                filename=f"Factura_{rectifying.invoice_number}.pdf",
+                filename=f"Factura_{result.number}.pdf",
                 caption=(
-                    f"✅ Factura rectificativa *{rectifying.invoice_number}*\n"
-                    f"Anula la factura {_md(number)}\n"
-                    f"Importe: {format_money(total, config)}"
+                    f"✅ Factura rectificativa {result.number}\n"
+                    f"Anula la factura {number}\n"
+                    f"Importe: {format_money(total, config)}\n"
+                    f"{result.email_status}"
                 ),
-                parse_mode="Markdown",
+                reply_markup=_keyboard(_resend_button(result)),
             )
         await status.delete()
     except ValueError as exc:
@@ -538,6 +550,60 @@ async def cmd_anular(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as exc:
         logger.error("Error creating rectifying invoice", exc_info=True)
         await status.edit_text(f"Error al anular la factura:\n`{exc}`", parse_mode="Markdown")
+
+
+async def cmd_reenviar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/reenviar <número>: email an issued invoice to its client again."""
+    if await _gate(update, "invoices.approve") is None:
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "Uso: `/reenviar <número de factura>`\nEjemplo: `/reenviar 2026-0007`",
+            parse_mode="Markdown",
+        )
+        return
+    await _resend(update.message, context.args[0].strip())
+
+
+async def _resend(target, number: str) -> None:
+    status = await target.reply_text(f"Reenviando la factura {number}...")
+    sent, error = await asyncio.to_thread(finalize.resend, number)
+    if sent:
+        record = store.get_issued(number)
+        await status.edit_text(
+            f"📧 Factura {number} enviada a {record['invoice'].client_email}.")
+    else:
+        await status.edit_text(f"⚠️ No se ha podido enviar la factura {number}: {error}")
+
+
+async def cmd_factura(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/factura <número>: the PDF of an issued invoice. Without a number: the latest ones."""
+    if await _gate(update, "invoices.view") is None:
+        return
+    config = get_config()
+    if not context.args:
+        issued = store.list_issued()[:10]
+        if not issued:
+            await update.message.reply_text("Todavía no has emitido ninguna factura.")
+            return
+        lines = ["*Últimas facturas*", ""]
+        for record in issued:
+            inv = record["invoice"]
+            _, _, total = compute_totals(inv, config)
+            lines.append(f"• `{inv.invoice_number}` {_md(inv.client_name)} — "
+                         f"{format_money(total, config)}")
+        lines.append("\nPara el PDF: `/factura <número>`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return
+
+    number = context.args[0].strip()
+    path = await asyncio.to_thread(finalize.pdf_for, number)
+    if path is None:
+        await update.message.reply_text(f"No encuentro la factura {number}.")
+        return
+    with open(path, "rb") as pdf_file:
+        await update.message.reply_document(document=pdf_file,
+                                            filename=f"Factura_{number}.pdf")
 
 
 def _keyboard(buttons):
@@ -723,42 +789,37 @@ async def _approve(update, session, user: dict) -> None:
 
     status = await message.reply_text("Generando y enviando la factura...")
     try:
-        new_contact = session.contact_is_new()
-        # Numbering, PDF, Sheets and Gmail: slow and blocking, so off the event loop.
-        pdf_path = await asyncio.to_thread(finalize_invoice, invoice)
-        _, _, total = compute_totals(invoice, config)
-
+        # Stored first, so the invoice is linked to the client record it belongs to.
         saved_note = ""
-        if new_contact and session.save_contact():
-            saved_note = f"\n\n💾 He guardado a *{_md(invoice.client_name)}* en tus clientes."
+        if session.contact_is_new() and session.save_contact():
+            saved_note = f"\n\n💾 He guardado a {invoice.client_name} en tus clientes."
 
-        if invoice.client_email:
-            sent = f"📧 Enviada a {_md(invoice.client_email)}"
-        else:
-            sent = "⚠️ No enviada: falta el email del cliente"
+        # Numbering, PDF, Sheets and Gmail: slow and blocking, so off the event loop.
+        result = await asyncio.to_thread(finalize.issue, invoice)
+        _, _, total = compute_totals(invoice, config)
 
         # Stock moving without a word was the old behaviour: it only ever reached the
         # log file, so a level could drift for weeks before anyone noticed.
         stock_note = ""
-        for movement in getattr(invoice, "stock_movements", []):
+        for movement in result.stock_movements:
             stock_note += (
-                f"\n📦 {_md(movement['name'])}: −{movement['quantity']:g} → "
+                f"\n📦 {movement['name']}: −{movement['quantity']:g} → "
                 f"quedan {movement['balance']:g} {movement['unit']}"
             )
             if movement["low"]:
                 stock_note += " ⚠️ por reponer"
 
-        with open(pdf_path, "rb") as pdf_file:
+        with open(result.pdf_path, "rb") as pdf_file:
             await message.reply_document(
                 document=pdf_file,
-                filename=f"Factura_{invoice.invoice_number}.pdf",
+                filename=f"Factura_{result.number}.pdf",
                 caption=(
-                    f"✅ Factura *{invoice.invoice_number}*\n"
-                    f"Cliente: {_md(invoice.client_name)}\n"
+                    f"✅ Factura {result.number}\n"
+                    f"Cliente: {invoice.client_name}\n"
                     f"Total: {format_money(total, config)}\n"
-                    f"{sent}{stock_note}{saved_note}"
+                    f"{result.email_status}{stock_note}{saved_note}"
                 ),
-                parse_mode="Markdown",
+                reply_markup=_keyboard(_resend_button(result)),
             )
         await status.delete()
     except Exception as exc:
@@ -900,7 +961,7 @@ async def _on_pending_button(update: Update, action: str, token: str) -> None:
     status = await query.message.reply_text("Aprobando y enviando...")
     invoice.invoice_number = None  # a fresh gap-free number, assigned now
     try:
-        pdf_path = await asyncio.to_thread(finalize_invoice, invoice, token)
+        result = await asyncio.to_thread(finalize.issue, invoice, token)
     except KeyError:
         await status.edit_text("Esa factura ya no está pendiente: la ha aprobado otra persona.")
         return
@@ -910,21 +971,20 @@ async def _on_pending_button(update: Update, action: str, token: str) -> None:
         return
 
     _, _, total = compute_totals(invoice, config)
-    sent = (f"📧 Enviada a {invoice.client_email}" if invoice.client_email
-            else "⚠️ No enviada: falta el email del cliente")
-    with open(pdf_path, "rb") as pdf_file:
+    with open(result.pdf_path, "rb") as pdf_file:
         await query.message.reply_document(
             document=pdf_file,
-            filename=f"Factura_{invoice.invoice_number}.pdf",
-            caption=(f"✅ Factura {invoice.invoice_number} aprobada\n"
+            filename=f"Factura_{result.number}.pdf",
+            caption=(f"✅ Factura {result.number} aprobada\n"
                      f"Cliente: {invoice.client_name}\n"
-                     f"Total: {format_money(total, config)}\n{sent}"),
+                     f"Total: {format_money(total, config)}\n{result.email_status}"),
+            reply_markup=_keyboard(_resend_button(result)),
         )
     await status.delete()
     await asyncio.to_thread(
         notify.tell_creator, pending,
         f"✅ {approver} ha aprobado tu factura para {invoice.client_name}: "
-        f"{invoice.invoice_number}, {format_money(total, config)}. {sent}.")
+        f"{result.number}, {format_money(total, config)}.\n{result.email_status}")
 
 
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -935,6 +995,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if data.startswith("pend:"):
         _, action, token = (data.split(":", 2) + ["", ""])[:3]
         await _on_pending_button(update, action, token)
+        return
+
+    if data.startswith("resend:"):
+        if await _gate(update, "invoices.approve") is None:
+            return
+        await query.edit_message_reply_markup(reply_markup=None)
+        await _resend(query.message, data.split(":", 1)[1])
         return
 
     if data.startswith("exp:"):
@@ -1069,6 +1136,7 @@ def _bot_token() -> str | None:
 _MENU = [
     ("ayuda", "Cómo hablarme y ejemplos"),
     ("pendientes", "Facturas esperando aprobación"),
+    ("factura", "El PDF de una factura emitida"),
     ("pagos", "Qué debes y qué te deben"),
     ("clientes", "Clientes guardados"),
     ("stock", "Qué tienes en stock"),
@@ -1101,6 +1169,9 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("chatid", cmd_chatid))
     app.add_handler(CommandHandler("pendientes", cmd_pendientes))
+    app.add_handler(CommandHandler("factura", cmd_factura))
+    app.add_handler(CommandHandler("facturas", cmd_factura))
+    app.add_handler(CommandHandler("reenviar", cmd_reenviar))
     app.add_handler(CommandHandler("anular", cmd_anular))
     app.add_handler(CommandHandler("gasto", cmd_gasto))
     app.add_handler(CommandHandler("pagos", cmd_pagos))
