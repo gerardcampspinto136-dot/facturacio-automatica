@@ -16,6 +16,7 @@ import asyncio
 import html
 import logging
 import os
+from pathlib import Path
 from datetime import date, datetime
 
 from fastapi import FastAPI, Request
@@ -475,6 +476,7 @@ _NAV = (
         ("invoices.view", "/quotes", "✎", "Presupuestos"),
         ("invoices.view", "/recurring", "↻", "Recurrentes"),
         ("receivables.view", "/receivables", "↓", "Cobros"),
+        ("receivables.manage", "/bank", "⇄", "Banco"),
         ("contacts.view", "/contacts", "☺", "Clientes"),
     )),
     ("Gastos", (
@@ -1659,6 +1661,187 @@ async def bills_delete(request: Request, bill_id: int):
         return refusal
     bills.delete(bill_id)
     return RedirectResponse("/bills", status_code=303)
+
+
+# ── The bank ─────────────────────────────────────────────────────────────────
+
+_CATEGORIES = ("otros", "material", "suministros", "transporte", "dietas", "servicios",
+               "software", "alquiler", "seguros", "impuestos")
+
+
+@app.get("/bank", response_class=HTMLResponse)
+async def bank_page(request: Request, added: int = -1, dup: int = 0, auto: int = 0):
+    from src import bank
+
+    user, refusal = _guard(request, "receivables.manage")
+    if refusal:
+        return refusal
+    can_bills = accounts.can(user, "bills.manage")
+
+    notice = ""
+    if added >= 0:
+        notice = (f"<div class='notice notice-ok'><b>Extracto importado.</b>{added} "
+                  f"movimiento(s) nuevo(s){f', {dup} ya estaban' if dup else ''}; "
+                  f"{auto} cobro(s) y pago(s) cuadrados solos.</div>")
+
+    upload = (
+        "<div class='card'><div class='card-title'>Subir el extracto del banco</div>"
+        "<div class='card-hint'>Norma 43 (el formato estándar de los bancos), Excel o "
+        "CSV: se descarga desde la banca online. Lo que cuadre por importe y referencia "
+        "se marca solo; el resto te lo enseño aquí.</div>"
+        "<form method='post' action='/bank/import' enctype='multipart/form-data' "
+        "class='billform'><input type='file' name='statement' required "
+        "accept='.n43,.aeb,.c43,.q43,.txt,.csv,.xlsx'>"
+        "<button class='btn-primary'>Importar</button></form></div>")
+
+    proposals, charges, incomes = [], [], []
+    for m in bank.pending_movements():
+        found = bank.candidates(m) if (m.amount > 0 or can_bills) else []
+        if found:
+            proposals.append((m, found))
+        elif m.amount < 0:
+            charges.append(m)
+        else:
+            incomes.append(m)
+
+    def when(m):
+        return m.date.strftime("%d/%m/%Y")
+
+    sections = []
+    if proposals:
+        rows = []
+        for m, found in proposals:
+            buttons = "".join(
+                f"<form method='post' action='/bank/{m.id}/apply'>"
+                f"<input type='hidden' name='kind' value='{c.kind}'>"
+                f"<input type='hidden' name='ref' value='{html.escape(c.ref)}'>"
+                f"<button class='btn-primary btn-sm' title='{html.escape(', '.join(c.reasons))}'>"
+                f"Es {html.escape(c.label)}</button></form>" for c in found[:3])
+            rows.append(
+                f"<tr><td class='muted'>{when(m)}</td>"
+                f"<td>{html.escape(m.description[:90])}</td>"
+                f"<td class='num total'>{_money(m.amount)}</td>"
+                f"<td><div class='actions'>{buttons}"
+                f"<form method='post' action='/bank/{m.id}/ignore'>"
+                f"<button class='btn-neutral btn-sm'>Ninguna</button></form></div></td></tr>")
+        sections.append(
+            "<h2>¿Es esto?</h2><div class='card'><div class='card-hint'>Mismo importe "
+            "que una factura pendiente, pero sin su número en el concepto: confírmalo "
+            "tú.</div><div class='table-wrap'><table><tbody>" + "".join(rows)
+            + "</tbody></table></div></div>")
+
+    if charges and can_bills:
+        options = "".join(f"<option>{c}</option>" for c in _CATEGORIES)
+        rows = "".join(
+            f"<tr><td class='muted'>{when(m)}</td>"
+            f"<td>{html.escape(m.description[:90])}</td>"
+            f"<td class='num total'>{_money(m.amount)}</td>"
+            f"<td><form method='post' action='/bank/{m.id}/expense' class='actions'>"
+            f"<input name='supplier' value='{html.escape(bank.guess_supplier(m.description))}' "
+            f"style='width:170px'><select name='category' style='width:auto'>{options}"
+            f"</select><button class='btn-primary btn-sm'>Anotar gasto</button></form>"
+            f"<form method='post' action='/bank/{m.id}/ignore'>"
+            f"<button class='btn-neutral btn-sm'>No es un gasto</button></form></td></tr>"
+            for m in charges)
+        total = sum(-m.amount for m in charges)
+        sections.append(
+            f"<h2>Cargos sin gasto anotado · {_money(total)}</h2><div class='card'>"
+            "<div class='card-hint'>Dinero que ha salido y no está en tus gastos: suele "
+            "ser el teléfono, el seguro, las comisiones... Anótalos para que cuenten en "
+            "el trimestre (el IVA, cuando tengas la factura).</div>"
+            "<div class='table-wrap'><table><tbody>" + rows + "</tbody></table></div></div>")
+
+    if incomes:
+        rows = "".join(
+            f"<tr><td class='muted'>{when(m)}</td><td>{html.escape(m.description[:90])}</td>"
+            f"<td class='num total'>{_money(m.amount)}</td>"
+            f"<td><form method='post' action='/bank/{m.id}/ignore'>"
+            f"<button class='btn-neutral btn-sm'>Visto</button></form></td></tr>"
+            for m in incomes)
+        sections.append(
+            "<h2>Ingresos sin factura que cuadre</h2><div class='card'><div "
+            "class='card-hint'>Ninguna factura pendiente tiene ese importe: puede ser un "
+            "pago parcial, uno de varias facturas juntas, o algo que no es un cobro."
+            "</div><div class='table-wrap'><table><tbody>" + rows
+            + "</tbody></table></div></div>")
+
+    if not sections and added < 0:
+        sections.append(_empty("Todo conciliado",
+                               "Sube el próximo extracto cuando quieras."))
+    return _page("Banco", notice + upload + "".join(sections), user,
+                 subtitle="El extracto marca lo cobrado y lo pagado", current="/bank")
+
+
+@app.post("/bank/import")
+async def bank_import(request: Request):
+    import tempfile
+
+    from src import bank
+
+    user, refusal = _guard(request, "receivables.manage")
+    if refusal:
+        return refusal
+    form = await request.form()
+    upload = form.get("statement")
+    if upload is None or not getattr(upload, "filename", ""):
+        return RedirectResponse("/bank", status_code=303)
+    suffix = Path(upload.filename).suffix.lower() or ".txt"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(await upload.read())
+        tmp_path = tmp.name
+    try:
+        report = await asyncio.to_thread(
+            bank.import_and_reconcile, tmp_path, True, accounts.can(user, "bills.manage"))
+    except bank.StatementError as exc:
+        return _page("No se ha podido leer", f"<div class='card'>{html.escape(str(exc))}"
+                     "<div class='actions'><a class='btn btn-neutral' href='/bank'>Volver"
+                     "</a></div></div>", user)
+    finally:
+        os.unlink(tmp_path)
+    return RedirectResponse(
+        f"/bank?added={report.added}&dup={report.duplicates}&auto={len(report.applied)}",
+        status_code=303)
+
+
+@app.post("/bank/{movement_id}/apply")
+async def bank_apply(request: Request, movement_id: int):
+    from src import bank
+
+    user, refusal = _guard(request, "receivables.manage")
+    if refusal:
+        return refusal
+    form = await request.form()
+    kind = form.get("kind")
+    if kind == "bill" and not accounts.can(user, "bills.manage"):
+        return RedirectResponse("/bank", status_code=303)
+    if kind in ("invoice", "bill"):
+        bank.apply(movement_id, kind, str(form.get("ref")))
+    return RedirectResponse("/bank", status_code=303)
+
+
+@app.post("/bank/{movement_id}/expense")
+async def bank_expense(request: Request, movement_id: int):
+    from src import bank
+
+    _user_, refusal = _guard(request, "bills.manage")
+    if refusal:
+        return refusal
+    form = await request.form()
+    category = form.get("category") if form.get("category") in _CATEGORIES else "otros"
+    bank.record_as_expense(movement_id, (form.get("supplier") or "").strip() or None,
+                           category)
+    return RedirectResponse("/bank", status_code=303)
+
+
+@app.post("/bank/{movement_id}/ignore")
+async def bank_ignore(request: Request, movement_id: int):
+    from src import bank
+
+    _user_, refusal = _guard(request, "receivables.manage")
+    if refusal:
+        return refusal
+    bank.ignore(movement_id)
+    return RedirectResponse("/bank", status_code=303)
 
 
 # ── Clients and suppliers ────────────────────────────────────────────────────

@@ -217,6 +217,26 @@ CREATE TABLE IF NOT EXISTS recurring_invoices (
 );
 CREATE INDEX IF NOT EXISTS idx_recurring_due ON recurring_invoices (active, next_date);
 
+-- Movements imported from bank statements, kept so that importing the same statement
+-- twice adds nothing, and so each can be matched to what it paid: an invoice (money
+-- in), a supplier bill (money out), or a new expense recorded from it.
+CREATE TABLE IF NOT EXISTS bank_movements (
+    id             INTEGER PRIMARY KEY,
+    fingerprint    TEXT NOT NULL UNIQUE,
+    date           TEXT NOT NULL,
+    value_date     TEXT,
+    amount         REAL NOT NULL,
+    description    TEXT NOT NULL DEFAULT '',
+    balance        REAL,
+    status         TEXT NOT NULL DEFAULT 'new'
+                   CHECK (status IN ('new', 'matched', 'ignored')),
+    invoice_number TEXT,
+    bill_id        INTEGER REFERENCES bills (id) ON DELETE SET NULL,
+    source         TEXT,
+    imported_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_bank_status ON bank_movements (status, date);
+
 -- Quotes (presupuestos). Not invoices: no fiscal value, no Verifactu record, and they
 -- can be accepted, rejected or left to expire. An accepted one becomes an invoice,
 -- and remembers which.

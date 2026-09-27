@@ -999,6 +999,104 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             os.unlink(tmp_path)
 
 
+_STATEMENT_SUFFIXES = (".n43", ".aeb", ".c43", ".q43", ".txt", ".csv", ".xlsx")
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A file that is neither a photo nor a PDF: a bank statement, if it reads as one."""
+    from src import bank
+
+    document = update.message.document
+    suffix = os.path.splitext(document.file_name or "")[1].lower()
+    if suffix not in _STATEMENT_SUFFIXES:
+        if await _gate(update) is None:
+            return
+        await update.message.reply_text(
+            f"No sé qué hacer con un archivo «{suffix or 'sin extensión'}». Mándame fotos "
+            "o PDF de facturas de proveedor, o el extracto del banco (Norma 43, Excel o "
+            "CSV).")
+        return
+    user = await _gate(update, "receivables.manage")
+    if user is None:
+        return
+
+    status = await update.message.reply_text("Leyendo el extracto del banco...")
+    tmp_path = None
+    try:
+        tg_file = await context.bot.get_file(document.file_id)
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = tmp.name
+        await tg_file.download_to_drive(tmp_path)
+        report = await asyncio.to_thread(bank.import_and_reconcile, tmp_path, True,
+                                         accounts.can(user, "bills.manage"))
+    except bank.StatementError as exc:
+        await status.edit_text(f"⚠️ {exc}")
+        return
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    await status.edit_text(_bank_summary(report))
+    for movement, found in report.proposed[:5]:
+        buttons = [[(f"Sí: {c.label}"[:60], f"bank:ok:{movement.id}:{c.kind}:{c.ref}")]
+                   for c in found[:2]]
+        buttons.append([("No es ninguna", f"bank:no:{movement.id}")])
+        await update.message.reply_text(
+            f"❓ {movement.date.strftime('%d/%m')} {format_money(movement.amount, get_config())}"
+            f" — {movement.description[:80]}\n¿Es esto?", reply_markup=_keyboard(buttons))
+
+
+def _bank_summary(report) -> str:
+    config = get_config()
+    lines = [f"🏦 Extracto importado: {report.added} movimiento(s) nuevo(s)"
+             + (f", {report.duplicates} ya estaban." if report.duplicates else ".")]
+    if report.applied:
+        lines.append("")
+        for movement, candidate in report.applied[:10]:
+            what = "cobrada" if candidate.kind == "invoice" else "pagada"
+            lines.append(f"✅ {candidate.label}: {what} "
+                         f"({format_money(abs(movement.amount), config)})")
+    if report.proposed:
+        lines.append(f"\n❓ {len(report.proposed)} por confirmar (te las pregunto ahora).")
+    if report.unmatched_out:
+        total = sum(-m.amount for m in report.unmatched_out)
+        lines.append(f"\n💸 {len(report.unmatched_out)} cargo(s) sin gasto anotado "
+                     f"({format_money(total, config)}): anótalos en el panel → Banco, "
+                     "para que cuenten en el trimestre.")
+    if report.unmatched_in:
+        lines.append(f"\n📥 {len(report.unmatched_in)} ingreso(s) que no cuadran con "
+                     "ninguna factura: revísalos en el panel → Banco.")
+    if len(lines) == 1:
+        lines.append("No había nada nuevo que conciliar.")
+    return "\n".join(lines)
+
+
+async def _on_bank_button(update: Update, data: str) -> None:
+    from src import bank
+
+    query = update.callback_query
+    parts = data.split(":")
+    user = await _gate(update, "receivables.manage")
+    if user is None:
+        return
+    await query.edit_message_reply_markup(reply_markup=None)
+    try:
+        movement_id = int(parts[2])
+    except (IndexError, ValueError):
+        return
+    if parts[1] == "no":
+        bank.ignore(movement_id)
+        await query.message.reply_text("Vale, lo dejo sin conciliar.")
+        return
+    kind, ref = parts[3], parts[4]
+    if kind == "bill" and not accounts.can(user, "bills.manage"):
+        await query.message.reply_text("No tienes permiso para marcar pagos a proveedores.")
+        return
+    bank.apply(movement_id, kind, ref)
+    await query.message.reply_text(
+        f"✅ Hecho: {'factura ' + ref + ' cobrada' if kind == 'invoice' else 'gasto pagado'}.")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Text works exactly like voice: continue the dialogue, or start a new invoice."""
     text = (update.message.text or "").strip()
@@ -1428,6 +1526,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _on_pending_button(update, action, token)
         return
 
+    if data.startswith("bank:"):
+        await _on_bank_button(update, data)
+        return
+
     if data.startswith("quo:"):
         _, action, number = (data.split(":", 2) + ["", ""])[:3]
         await _on_quote_button(update, action, number)
@@ -1654,6 +1756,9 @@ def run_bot() -> None:
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(
         filters.PHOTO | filters.Document.IMAGE | filters.Document.PDF, handle_photo))
+    app.add_handler(MessageHandler(
+        filters.Document.ALL & ~filters.Document.PDF & ~filters.Document.IMAGE,
+        handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)
 
