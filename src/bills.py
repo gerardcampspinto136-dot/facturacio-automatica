@@ -165,6 +165,36 @@ def due_soon(within_days: int = 7, as_of: Optional[date] = None) -> list[dict]:
     return out
 
 
+def find_duplicate(supplier_name: str, total: float, bill_date: Optional[date] = None,
+                   reference: Optional[str] = None) -> Optional[dict]:
+    """A bill already recorded that looks like this one, or None.
+
+    The same ticket photographed twice would count its VAT twice -- deducting VAT that
+    was never paid is exactly what an inspection finds. Same amount plus either the same
+    document number, or the same supplier on the same day, is taken as the same bill.
+    """
+    if total is None:
+        return None
+    rows = db.connect().execute(
+        "SELECT * FROM bills WHERE ABS(total - ?) < 0.005 ORDER BY id DESC", (total,)
+    ).fetchall()
+    wanted_ref = (reference or "").strip().lower()
+    wanted_name = (supplier_name or "").strip().lower()
+    wanted_date = (bill_date or date.today()).isoformat()
+    supplier = contacts.find_by_name(supplier_name, contacts.SUPPLIER) if supplier_name else None
+    for row in rows:
+        bill = _row(row)
+        if wanted_ref and (bill["reference"] or "").strip().lower() == wanted_ref:
+            return bill
+        same_supplier = (
+            (supplier is not None and bill["supplier_id"] == supplier["id"])
+            or (bill["supplier_name"] or "").strip().lower() == wanted_name
+        )
+        if same_supplier and bill["date"] == wanted_date:
+            return bill
+    return None
+
+
 def total_owed(as_of: Optional[date] = None, overdue_only: bool = False) -> float:
     sql = "SELECT COALESCE(SUM(total), 0) FROM bills WHERE paid_at IS NULL"
     params: list = []

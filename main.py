@@ -32,10 +32,29 @@ def _start_web(cfg) -> None:
     logger.info("Web panel running at %s", cfg.web_base_url)
 
 
+def _log_to_file() -> None:
+    """Keep a log on disk as well as in the window.
+
+    The window is closed, or the computer restarts, and whatever went wrong last night
+    is gone. Five files of 5 MB each is weeks of history in a few MB.
+    """
+    from logging.handlers import RotatingFileHandler
+    from pathlib import Path
+
+    folder = Path("data/logs")
+    folder.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(folder / "facturacion.log", maxBytes=5 * 1024 * 1024,
+                                  backupCount=5, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logging.getLogger().addHandler(handler)
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
     )
+    _log_to_file()
     cfg = get_config()
 
     # Import anything left by the earlier JSON-file store. No-op after the first run.

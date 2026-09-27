@@ -54,3 +54,6 @@ data/receipts/
 # Generated documents full of client data: never to the (public) repo
 data/gestor/
 data/presupuestos/
+data/.session_secret
+data/logs/
+data/backups/

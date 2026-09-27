@@ -440,6 +440,37 @@ def test_an_empty_image_is_refused(tmp_path):
         receipts.extract_receipt(str(photo))
 
 
+# ── The same ticket twice ────────────────────────────────────────────────────
+
+class TestDuplicates:
+    def ticket(self, **kw):
+        data = {"supplier_name": "Ferretería Puig", "total": 242.61,
+                "tax_amount": 42.11, "date": "12/09/2026", "reference": "F-2026/88"}
+        data.update(kw)
+        return receipts.build_receipt(data)
+
+    def test_the_same_document_twice_is_flagged(self):
+        receipts.record(self.ticket())
+        replies = receipts.ExpenseSession().start(self.ticket())
+        assert "Parece repetido" in replies[-1].text
+        assert replies[-1].buttons[0][0] == "✅ Guardar igualmente"
+
+    def test_same_supplier_same_day_same_amount_without_a_number(self):
+        receipts.record(self.ticket(reference=None))
+        assert "Parece repetido" in receipts.ExpenseSession().start(
+            self.ticket(reference=None))[-1].text
+
+    def test_a_different_amount_is_not_a_duplicate(self):
+        receipts.record(self.ticket())
+        assert "Parece repetido" not in receipts.ExpenseSession().start(
+            self.ticket(total=99.0, tax_amount=None, reference="F-2026/89"))[-1].text
+
+    def test_the_same_amount_another_day_is_not_a_duplicate(self):
+        receipts.record(self.ticket(reference=None))
+        assert "Parece repetido" not in receipts.ExpenseSession().start(
+            self.ticket(reference=None, date="13/09/2026"))[-1].text
+
+
 # ── Surviving a busy free tier ───────────────────────────────────────────────
 
 class _Busy(Exception):

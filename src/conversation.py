@@ -39,6 +39,20 @@ class Reply:
     markdown: bool = True
 
 
+def md(value) -> str:
+    """User text made safe for Telegram's Markdown.
+
+    In Telegram's Markdown an underscore starts italics, so an email such as
+    juan_perez@gmail.com -- or a client called "Taller_1" -- made Telegram reject the
+    whole message, and the user was left without the invoice to confirm. Escaping only
+    works outside bold/italic spans, so user text never goes inside one.
+    """
+    text = str(value if value is not None else "")
+    for char in ("_", "*", "`", "["):
+        text = text.replace(char, "\\" + char)
+    return text
+
+
 # Agreement and refusal. Spanish and Catalan glue pronouns onto imperatives
 # ("envíala", "descártala", "cancel·la-la"), so matching whole words alone would need an
 # endless list. Short unambiguous words are matched exactly; verbs are matched by stem.
@@ -164,9 +178,9 @@ class Session:
         if len(matches) > 1:
             self.awaiting = AWAIT_CONTACT
             self.candidates = matches
-            lines = [f"Hay {len(matches)} clientes que coinciden con «{name}». ¿Cuál es?"]
+            lines = [f"Hay {len(matches)} clientes que coinciden con «{md(name)}». ¿Cuál es?"]
             for i, c in enumerate(matches, 1):
-                lines.append(f"  {i}. {contacts.describe(c)}")
+                lines.append(f"  {i}. {md(contacts.describe(c))}")
             lines.append("\nResponde con el número.")
             return [Reply(
                 "\n".join(lines),
@@ -205,7 +219,7 @@ class Session:
         self._apply_contact(chosen)
         self.candidates = []
         self.awaiting = None
-        return [Reply(f"Vale, {chosen['name']}.")] + self._ask_next()
+        return [Reply(f"Vale, {md(chosen['name'])}.")] + self._ask_next()
 
     def _apply_contact(self, contact: dict) -> None:
         """Fill in from the stored record, without overwriting anything just dictated."""
@@ -266,7 +280,7 @@ class Session:
 
         accepted, complaint = checklist.apply_answer(self.invoice, field_name, text)
         if not accepted:
-            return [Reply(complaint or "No he entendido eso.")]
+            return [Reply(complaint or "No he entendido eso.", markdown=False)]
 
         # A name given late still deserves a lookup against the stored clients.
         if field_name == "client_name":
@@ -289,25 +303,25 @@ class Session:
             "*Revisa el presupuesto antes de enviarlo*" if is_quote
             else "*Revisa la factura antes de enviarla*",
             "",
-            f"Cliente: *{inv.client_name}*",
-            f"NIF/CIF: {inv.client_id or '—'}",
-            f"Email: {inv.client_email or '—'}",
+            f"*Cliente:* {md(inv.client_name)}",
+            f"NIF/CIF: {md(inv.client_id) or '—'}",
+            f"Email: {md(inv.client_email) or '—'}",
         ]
         if inv.quote_number:
             lines.insert(1, f"_Del presupuesto {inv.quote_number}_")
         if inv.client_address:
-            lines.append(f"Dirección: {inv.client_address}")
+            lines.append(f"Dirección: {md(inv.client_address)}")
         lines.append("")
         for item in inv.items:
             lines.append(
-                f"• {item.description} — {item.quantity:g} × "
+                f"• {md(item.description)} — {item.quantity:g} × "
                 f"{format_money(item.unit_price, config)} = {format_money(item.total, config)}"
             )
         # Accepted, but worth flagging: an unusual id is often a mis-transcription.
         if inv.client_id == "SIN NIF":
             lines.append("⚠️ Sin identificador fiscal — revisa si la factura lo necesita.")
         elif inv.client_id and not checklist.looks_spanish_tax_id(inv.client_id):
-            lines.append(f"⚠️ «{inv.client_id}» no tiene forma de NIF/CIF español. "
+            lines.append(f"⚠️ «{md(inv.client_id)}» no tiene forma de NIF/CIF español. "
                          "Lo uso igual, pero compruébalo.")
         withholding = irpf_rate(inv, config)
         if withholding and inv.client_id == "SIN NIF":
@@ -316,7 +330,7 @@ class Session:
         lines.append("")
         lines.append(summary_lines(inv, config))
         if inv.notes:
-            lines.append(f"\nObservaciones: {inv.notes}")
+            lines.append(f"\nObservaciones: {md(inv.notes)}")
 
         # Offered only where it can matter: an invoice that carries a withholding, or a
         # company that normally applies one. Everyone else never sees the button.
@@ -328,7 +342,7 @@ class Session:
 
         if is_quote:
             # A quote has no fiscal weight: anyone who may prepare invoices may send one.
-            lines.append(f"\n¿Se lo envío a {inv.client_email}? Válido "
+            lines.append(f"\n¿Se lo envío a {md(inv.client_email)}? Válido "
                          f"{getattr(config, 'quote_validity_days', 30)} días.")
             buttons = [
                 ("📤 Enviar presupuesto", "approve"),
@@ -337,7 +351,7 @@ class Session:
                 ("❌ Descartar", "cancel"),
             ]
         elif self.can_send:
-            lines.append(f"\n¿La envío a {inv.client_email}?")
+            lines.append(f"\n¿La envío a {md(inv.client_email)}?")
             buttons = [
                 ("✅ Enviar", "approve"),
                 ("💾 Guardar sin enviar", "hold"),
@@ -349,7 +363,7 @@ class Session:
             # Not theirs to send: it goes to whoever can approve, who gets it on their
             # phone with an approve button.
             lines.append("\n¿La mando a revisión? En cuanto la apruebe un responsable "
-                         f"saldrá hacia {inv.client_email or 'el cliente'}.")
+                         f"saldrá hacia {md(inv.client_email) or 'el cliente'}.")
             buttons = [
                 ("📤 Mandar a revisión", "approve"),
                 ("🔄 Cambiar IVA", "toggle_tax"),

@@ -17,6 +17,7 @@ Two phases, and the order is the whole point:
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -98,6 +99,19 @@ def record(invoice: InvoiceData, token: Optional[str] = None,
     config = get_config()
     prepare(invoice, config)
     series = config.invoice_series if series is None else series
+
+    if token:
+        # A draft approved days after it was dictated is issued TODAY: the date on an
+        # invoice is its issue date, numbers in a series must not go back in time, and
+        # Verifactu registers the issue date. The day the work was done, if different,
+        # is stated as the date of the operation, as the invoicing rules ask.
+        today = date.today()
+        worked = invoice.date or today
+        if worked != today:
+            mention = f"Fecha de la operación: {worked.strftime('%d/%m/%Y')}."
+            if mention not in (invoice.notes or ""):
+                invoice.notes = f"{invoice.notes} {mention}" if invoice.notes else mention
+        invoice.date = today
 
     with db.transaction() as conn:
         if invoice.invoice_number in _DRAFT_MARKERS:

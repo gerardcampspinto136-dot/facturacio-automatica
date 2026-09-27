@@ -853,14 +853,30 @@ def _keyboard(buttons):
     return InlineKeyboardMarkup(rows)
 
 
+async def _reply(target, text: str, markdown: bool = True, reply_markup=None):
+    """Send a message, falling back to plain text if Telegram rejects the formatting.
+
+    User text is escaped wherever it goes into a message, but a single stray "_" that
+    slipped through would otherwise make Telegram refuse the whole message -- and the
+    person would never see the invoice they were about to confirm. Losing the bold is
+    better than losing the message.
+    """
+    from telegram.error import BadRequest
+
+    try:
+        return await target.reply_text(
+            text, parse_mode="Markdown" if markdown else None, reply_markup=reply_markup)
+    except BadRequest as exc:
+        if not markdown or "parse" not in str(exc).lower():
+            raise
+        logger.warning("Telegram rejected the Markdown (%s); sending as plain text", exc)
+        return await target.reply_text(text, reply_markup=reply_markup)
+
+
 async def _send(target, replies) -> None:
     """Deliver the conversation's replies to Telegram."""
     for reply in replies:
-        await target.reply_text(
-            reply.text,
-            parse_mode="Markdown" if reply.markdown else None,
-            reply_markup=_keyboard(reply.buttons),
-        )
+        await _reply(target, reply.text, reply.markdown, _keyboard(reply.buttons))
 
 
 # ── Dictating an invoice ─────────────────────────────────────────────────────

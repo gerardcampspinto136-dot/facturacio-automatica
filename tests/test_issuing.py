@@ -67,6 +67,31 @@ class TestNoGaps:
         assert peek_invoice_number() == f"{YEAR}-0002"
 
 
+# ── The issue date ───────────────────────────────────────────────────────────
+
+class TestIssueDate:
+    def test_a_draft_approved_later_is_dated_the_day_it_is_issued(self, offline):
+        dictated = date.today() - timedelta(days=3)
+        token = store.add_pending(an_invoice(date=dictated), "d.pdf")
+        result = finalize.issue(store.get_pending(token)["invoice"], token)
+
+        issued = store.get_issued(result.number)["invoice"]
+        assert issued.date == date.today()
+        assert f"Fecha de la operación: {dictated.strftime('%d/%m/%Y')}" in issued.notes
+
+    def test_numbers_never_go_back_in_time(self, offline):
+        old_draft = store.add_pending(an_invoice(date=date.today() - timedelta(days=9)),
+                                      "d.pdf")
+        first = finalize.issue(an_invoice())                       # today
+        second = finalize.issue(store.get_pending(old_draft)["invoice"], old_draft)
+        assert second.invoice.date >= first.invoice.date
+
+    def test_a_same_day_approval_adds_nothing(self, offline):
+        token = store.add_pending(an_invoice(), "d.pdf")
+        result = finalize.issue(store.get_pending(token)["invoice"], token)
+        assert "Fecha de la operación" not in (result.invoice.notes or "")
+
+
 # ── Frozen once issued ───────────────────────────────────────────────────────
 
 class TestFrozen:

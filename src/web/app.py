@@ -32,13 +32,37 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Revisión de facturas")
 
 
+# The values shipped in .env.example and old code: anyone can read them, so a session
+# signed with one could be forged -- a login as anybody.
+_KNOWN_SECRETS = {"", "change-me-to-a-long-random-string", "dev-insecure-secret-change-me"}
+SECRET_FILE = "data/.session_secret"
+
+
+def _session_secret() -> str:
+    """The key that signs the login cookie: .env's, else one made for this machine."""
+    import secrets
+    from pathlib import Path
+
+    configured = (os.getenv("SESSION_SECRET") or "").strip()
+    if configured not in _KNOWN_SECRETS:
+        return configured
+    path = Path(SECRET_FILE)
+    try:
+        if path.exists() and path.read_text(encoding="utf-8").strip():
+            return path.read_text(encoding="utf-8").strip()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        secret = secrets.token_hex(32)
+        path.write_text(secret, encoding="utf-8")
+        return secret
+    except OSError:
+        # Unwritable: still secret, but sessions will not survive a restart.
+        return secrets.token_hex(32)
+
+
 def _install_middleware() -> None:
     from starlette.middleware.sessions import SessionMiddleware
 
-    app.add_middleware(
-        SessionMiddleware,
-        secret_key=os.getenv("SESSION_SECRET", "dev-insecure-secret-change-me"),
-    )
+    app.add_middleware(SessionMiddleware, secret_key=_session_secret())
 
 
 _install_middleware()

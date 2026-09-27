@@ -28,7 +28,7 @@ from typing import Optional
 
 from src import bills, contacts
 from src.config_loader import get_config
-from src.conversation import Reply, says_no, says_yes
+from src.conversation import Reply, md, says_no, says_yes
 from src.totals import format_money
 
 logger = logging.getLogger(__name__)
@@ -203,12 +203,12 @@ class ReceiptData:
         lines = [
             "*He leído esto del documento*",
             "",
-            f"Proveedor: *{self.supplier_name or '—'}*",
+            f"*Proveedor:* {md(self.supplier_name) or '—'}",
         ]
         if self.supplier_tax_id:
-            lines.append(f"CIF/NIF: {self.supplier_tax_id}")
+            lines.append(f"CIF/NIF: {md(self.supplier_tax_id)}")
         if self.reference:
-            lines.append(f"Nº: {self.reference}")
+            lines.append(f"Nº: {md(self.reference)}")
         lines.append(f"Fecha: {self.date.isoformat() if self.date else '—'}")
         lines.append("")
         if self.subtotal is not None:
@@ -230,9 +230,9 @@ class ReceiptData:
                  + (f", vence el {self.due_date.isoformat()}" if self.due_date else "")
         )
         if self.notes:
-            lines.append(f"Nota: {self.notes}")
+            lines.append(f"Nota: {md(self.notes)}")
         for flag in self.flags:
-            lines.append(f"⚠️ {flag}")
+            lines.append(f"⚠️ {md(flag)}")
         if self.confidence and self.confidence < 0.7:
             lines.append("⚠️ La foto se lee con dificultad. Comprueba los importes.")
         return "\n".join(lines)
@@ -673,7 +673,7 @@ class ExpenseSession:
         if self.receipt.total is None:
             self.awaiting = AWAIT_TOTAL
             return [Reply(
-                f"No he podido leer el importe de *{self.receipt.supplier_name}*. "
+                f"No he podido leer el importe de {md(self.receipt.supplier_name)}. "
                 "¿Cuánto es en total, con IVA?"
             )]
         return self._present()
@@ -681,10 +681,22 @@ class ExpenseSession:
     def _present(self) -> list[Reply]:
         self.awaiting = AWAIT_CONFIRM
         paid_label = "⏳ Marcar pendiente" if self.receipt.paid else "💳 Marcar pagada"
+        text = self.receipt.summary()
+        save_label = "✅ Guardar"
+        twin = bills.find_duplicate(self.receipt.supplier_name, self.receipt.total,
+                                    self.receipt.date, self.receipt.reference)
+        if twin is not None:
+            # Counting its VAT twice is what an inspection would find; the user decides.
+            text += (f"\n\n⚠️ *Parece repetido:* ya tienes anotado un gasto de "
+                     f"{md(twin['supplier_name'])} por "
+                     f"{format_money(twin['total'], get_config())} del "
+                     f"{date.fromisoformat(twin['date']).strftime('%d/%m/%Y')}. "
+                     "Si es el mismo, descártalo.")
+            save_label = "✅ Guardar igualmente"
         return [Reply(
-            self.receipt.summary() + "\n\n¿Lo anoto?",
+            text + "\n\n¿Lo anoto?",
             buttons=[
-                ("✅ Guardar", "exp:save"),
+                (save_label, "exp:save"),
                 (paid_label, "exp:toggle_paid"),
                 ("❌ Descartar", "exp:cancel"),
             ],
@@ -761,7 +773,7 @@ class ExpenseSession:
         bill = bills.get(bill_id)
         deductible = self.receipt.tax_amount or 0.0
         lines = [
-            f"✅ Anotado: *{bill['supplier_name']}* — "
+            f"✅ Anotado: {md(bill['supplier_name'])} — "
             f"{format_money(bill['total'], config)}",
         ]
         if deductible:
